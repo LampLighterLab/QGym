@@ -17,6 +17,8 @@ from gym.envs.base.robot_layout import RobotLayout
 from gym.envs.base.sim_backend import SimBackend
 from gym.envs.base.urdf_limits import parse_urdf_limits
 
+from gym.envs.mini_cheetah.mini_cheetah_config import MiniCheetahCfg
+
 # Quaternion convention helpers: MuJoCo [w,x,y,z] ↔ task-layer [x,y,z,w]
 WXYZ_TO_XYZW = [1, 2, 3, 0]
 XYZW_TO_WXYZ = [3, 0, 1, 2]
@@ -189,6 +191,11 @@ class MuJocoBackendBase(SimBackend):
                     setattr(
                         spec.option, name, getattr(cfg.mjspec_option_attributes, name)
                     )
+
+        # Hardcode njmax and opt.ccd_iterations for mini cheetah
+        if isinstance(cfg, MiniCheetahCfg):
+            spec.njmax = 90
+            spec.option.ccd_iterations = 50
 
         mjm = spec.compile()
         if terrain_sliding_friction is not None:
