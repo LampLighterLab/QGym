@@ -201,11 +201,6 @@ class MuJocoBackendBase(SimBackend):
                 if not name.startswith("_"):
                     setattr(spec.option, name, getattr(cfg.mjspec_option_attributes, name))
 
-
-        if isinstance(cfg, MiniCheetahCfg):
-            spec.njmax = 90
-            spec.option.ccd_iterations = 50
-
         mjm = spec.compile()
         if terrain_sliding_friction is not None:
             # MuJoCo combines same-priority geom friction using the larger
