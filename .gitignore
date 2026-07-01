@@ -1,4 +1,6 @@
 *.pt
+*.png
+isaacgym/*
 *venv*
 logs/
 artifacts/
