@@ -1,9 +1,9 @@
 import torch
 
 from gym.envs.base.legged_robot import LeggedRobot
-from learning.utils.logger.SaveStates import (
-    init_env_log_buffers,
-)
+# from learning.utils.logger.SaveStates import (
+#     init_env_log_buffers,
+# )
 
 
 class MiniCheetah(LeggedRobot):
@@ -45,10 +45,18 @@ class MiniCheetah(LeggedRobot):
 
     def _reward_tracking_ang_vel(self):
         """Tracking of angular velocity commands (yaw)"""
+<<<<<<< HEAD
         scale = getattr(
             self.cfg.reward_settings,
             "tracking_ang_vel_scale",
             2.5,
+||||||| parent of 15d31380 (comment out logging debugging function)
+        ang_vel_error = torch.square(
+            (self.commands[:, 2] - self.base_ang_vel[:, 2]) / 5.0
+=======
+        ang_vel_error = torch.square(
+            (self.commands[:, 2] - self.base_ang_vel[:, 2]) / 2.5
+>>>>>>> 15d31380 (comment out logging debugging function)
         )
         ang_vel_error = (self.commands[:, 2] - self.base_ang_vel[:, 2]) / scale
         return self._sqrdexp(ang_vel_error)
