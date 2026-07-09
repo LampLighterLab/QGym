@@ -199,7 +199,9 @@ class MuJocoBackendBase(SimBackend):
         if hasattr(cfg, "mjspec_option_attributes"):
             for name in dir(cfg.mjspec_option_attributes):
                 if not name.startswith("_"):
-                    setattr(spec.option, name, getattr(cfg.mjspec_option_attributes, name))
+                    setattr(
+                        spec.option, name, getattr(cfg.mjspec_option_attributes, name)
+                    )
 
         mjm = spec.compile()
         if terrain_sliding_friction is not None:
