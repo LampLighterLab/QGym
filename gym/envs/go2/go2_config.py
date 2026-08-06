@@ -5,6 +5,66 @@ from gym.envs.base.legged_robot_config import (
 
 BASE_HEIGHT_REF = 0.4
 
+GO2_DOF_NAMES = [
+    "FL_hip_joint",
+    "FL_thigh_joint",
+    "FL_calf_joint",
+    "FR_hip_joint",
+    "FR_thigh_joint",
+    "FR_calf_joint",
+    "RL_hip_joint",
+    "RL_thigh_joint",
+    "RL_calf_joint",
+    "RR_hip_joint",
+    "RR_thigh_joint",
+    "RR_calf_joint",
+]
+
+GO2_BODY_NAMES = [
+    "base",
+    "Head_upper",
+    "Head_lower",
+    "FL_hip",
+    "FL_hip_rotor",
+    "FL_thigh",
+    "FL_thigh_rotor",
+    "FL_calf",
+    "FL_calflower",
+    "FL_calflower1",
+    "FL_calf_rotor",
+    "FL_foot",
+    "FR_hip",
+    "FR_hip_rotor",
+    "FR_thigh",
+    "FR_thigh_rotor",
+    "FR_calf",
+    "FR_calflower",
+    "FR_calflower1",
+    "FR_calf_rotor",
+    "FR_foot",
+    "RL_hip",
+    "RL_hip_rotor",
+    "RL_thigh",
+    "RL_thigh_rotor",
+    "RL_calf",
+    "RL_calflower",
+    "RL_calflower1",
+    "RL_calf_rotor",
+    "RL_foot",
+    "RR_hip",
+    "RR_hip_rotor",
+    "RR_thigh",
+    "RR_thigh_rotor",
+    "RR_calf",
+    "RR_calflower",
+    "RR_calflower1",
+    "RR_calf_rotor",
+    "RR_foot",
+    "imu",
+    "radar",
+    "front_camera",
+]
+
 
 class Go2Cfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
@@ -99,6 +159,22 @@ class Go2Cfg(LeggedRobotCfg):
         joint_damping = 0.01
         rotor_inertia = [0.002268, 0.002268, 0.005484] * 4
 
+    class robot_layout:
+        version = "go2_v1"
+        dof_names = GO2_DOF_NAMES
+        actuated_dof_names = GO2_DOF_NAMES
+        body_names = GO2_BODY_NAMES
+        dof_groups = {
+            "FL_leg": GO2_DOF_NAMES[0:3],
+            "FR_leg": GO2_DOF_NAMES[3:6],
+            "RL_leg": GO2_DOF_NAMES[6:9],
+            "RR_leg": GO2_DOF_NAMES[9:12],
+            "abad": GO2_DOF_NAMES[0:12:3],
+        }
+        body_groups = {
+            "feet": ["FL_foot", "FR_foot", "RL_foot", "RR_foot"],
+        }
+
     class reward_settings(LeggedRobotCfg.reward_settings):
         soft_dof_pos_limit = 0.9
         soft_dof_vel_limit = 0.9
@@ -123,6 +199,9 @@ class Go2Cfg(LeggedRobotCfg):
 
     class mjspec_option_attributes:
         ccd_iterations = 50
+
+    class vsim_attributes:
+        solver_iterations = 16
 
 
 class Go2RunnerCfg(LeggedRobotRunnerCfg):

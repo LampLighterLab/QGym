@@ -19,6 +19,7 @@ class_dict = {
     "HumanoidRunning": ".mit_humanoid.humanoid_running",
     "Pendulum": ".pendulum.pendulum",
     "Go2": ".go2.go2",
+    "Go2Ref": ".go2.go2_ref",
 }
 
 config_dict = {
@@ -34,6 +35,7 @@ config_dict = {
     "PendulumSACCfg": ".pendulum.pendulum_SAC_config",
     "PendulumPSDCfg": ".pendulum.pendulum_PSD_config",
     "Go2Cfg": ".go2.go2_config",
+    "Go2RefCfg": ".go2.go2_ref_config",
 }
 
 runner_config_dict = {
@@ -49,6 +51,7 @@ runner_config_dict = {
     "PendulumSACRunnerCfg": ".pendulum.pendulum_SAC_config",
     "PendulumPSDRunnerCfg": ".pendulum.pendulum_PSD_config",
     "Go2RunnerCfg": ".go2.go2_config",
+    "Go2RefRunnerCfg": ".go2.go2_ref_config",
 }
 
 task_dict = {
@@ -83,7 +86,8 @@ task_dict = {
     "pendulum": ["Pendulum", "PendulumCfg", "PendulumRunnerCfg"],
     "sac_pendulum": ["Pendulum", "PendulumSACCfg", "PendulumSACRunnerCfg"],
     "psd_pendulum": ["Pendulum", "PendulumPSDCfg", "PendulumPSDRunnerCfg"],
-    "go2": ["Go2", "Go2Cfg", "Go2RunnerCfg"]
+    "go2": ["Go2", "Go2Cfg", "Go2RunnerCfg"],
+    "go2_ref": ["Go2Ref", "Go2RefCfg", "Go2RefRunnerCfg"],
 }
 
 
