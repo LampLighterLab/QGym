@@ -39,8 +39,8 @@ class LeggedRobot(BaseTask):
         # * step physics and render each frame
         self._render()
         for _ in range(self.cfg.control.decimation):
-            self._pre_compute_torques()
-            self.torques = self._compute_torques()
+            self.torques = self._pre_compute_torques()
+            self._compute_torques()
             self._post_compute_torques()
             self._step_backend()
             self._post_physics_step()
@@ -55,7 +55,18 @@ class LeggedRobot(BaseTask):
         return None
 
     def _pre_compute_torques(self):
-        return None
+        pos = self.dof_pos.index_select(1, self.actuated_dof_indices)
+        vel = self.dof_vel.index_select(1, self.actuated_dof_indices)
+        default_pos = self.default_dof_pos.index_select(1, self.actuated_dof_indices)
+        torques = (
+            self.p_gains * (self.dof_pos_target + default_pos - pos)
+            + self.d_gains * (self.dof_vel_target - vel)
+            + self.tau_ff
+        )
+        torques = torch.clip(
+            torques, -self.actuated_torque_limits, self.actuated_torque_limits
+        )
+        return torques.view(self.torques.shape)
 
     def _post_compute_torques(self):
         if self.cfg.asset.disable_motors:
@@ -239,18 +250,7 @@ class LeggedRobot(BaseTask):
         return props
 
     def _compute_torques(self):
-        pos = self.dof_pos.index_select(1, self.actuated_dof_indices)
-        vel = self.dof_vel.index_select(1, self.actuated_dof_indices)
-        default_pos = self.default_dof_pos.index_select(1, self.actuated_dof_indices)
-        torques = (
-            self.p_gains * (self.dof_pos_target + default_pos - pos)
-            + self.d_gains * (self.dof_vel_target - vel)
-            + self.tau_ff
-        )
-        torques = torch.clip(
-            torques, -self.actuated_torque_limits, self.actuated_torque_limits
-        )
-        return torques.view(self.torques.shape)
+        return None
 
     def _reset_system(self, env_ids):
         """Resets selected environmments
