@@ -65,6 +65,8 @@ GO2_BODY_NAMES = [
     "front_camera",
 ]
 
+GO2_LEG_GROUPS = ["FL_leg", "FR_leg", "RL_leg", "RR_leg"]
+
 
 class Go2Cfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
@@ -159,21 +161,21 @@ class Go2Cfg(LeggedRobotCfg):
         joint_damping = 0.01
         rotor_inertia = [0.002268, 0.002268, 0.005484] * 4
 
-    class robot_layout:
-        version = "go2_v1"
-        dof_names = GO2_DOF_NAMES
-        actuated_dof_names = GO2_DOF_NAMES
-        body_names = GO2_BODY_NAMES
-        dof_groups = {
-            "FL_leg": GO2_DOF_NAMES[0:3],
-            "FR_leg": GO2_DOF_NAMES[3:6],
-            "RL_leg": GO2_DOF_NAMES[6:9],
-            "RR_leg": GO2_DOF_NAMES[9:12],
-            "abad": GO2_DOF_NAMES[0:12:3],
-        }
-        body_groups = {
-            "feet": ["FL_foot", "FR_foot", "RL_foot", "RR_foot"],
-        }
+        class robot_layout:
+            version = "go2_v1"
+            dof_names = GO2_DOF_NAMES
+            actuated_dof_names = GO2_DOF_NAMES
+            body_names = GO2_BODY_NAMES
+            dof_groups = {
+                "FL_leg": GO2_DOF_NAMES[0:3],
+                "FR_leg": GO2_DOF_NAMES[3:6],
+                "RL_leg": GO2_DOF_NAMES[6:9],
+                "RR_leg": GO2_DOF_NAMES[9:12],
+                "abad": GO2_DOF_NAMES[0:12:3],
+            }
+            body_groups = {
+                "feet": ["FL_foot", "FR_foot", "RL_foot", "RR_foot"],
+            }
 
     class reward_settings(LeggedRobotCfg.reward_settings):
         soft_dof_pos_limit = 0.9
