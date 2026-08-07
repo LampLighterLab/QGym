@@ -57,15 +57,18 @@ class Go2RefCfg(Go2Cfg):
         }
 
     class scaling(Go2Cfg.scaling):
-        base_ang_vel = 0.3
+        base_ang_vel = 1.0
         base_lin_vel = BASE_HEIGHT_REF
-        dof_vel = 4 * [2.0, 2.0, 4.0]
+        dof_vel = 4 * [5.0, 5.0, 8.0]
         base_height = 0.3 / 2
-        dof_pos = 4 * [0.2, 0.3, 0.3]
+        dof_pos = 4 * [0.5, 0.5, 0.5]
         dof_pos_obs = dof_pos
-        dof_pos_target = 4 * [0.2, 0.3, 0.3]
+        dof_pos_obs_residual = 4 * [0.25, 0.25, 0.25]
+        dof_pos_target = 4 * [0.5, 0.5, 1.0]
         tau_ff = 4 * [18, 18, 28]
         commands = [3, 1, 3]
+        phase_obs = 1.0
+        projected_gravity = 0.2
 
 
 class Go2RefRunnerCfg(Go2RunnerCfg):

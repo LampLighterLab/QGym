@@ -32,6 +32,7 @@ def save_to_log_buffers(env, state_list):
             "No longer logging states, max timestep in logging buffers reached: "
             + str(t.item())
         )
+        save_histogram_from_env(env, state_list)
         return
     for state in state_list:
         buffer_size = env._buffer_size_dict[state]

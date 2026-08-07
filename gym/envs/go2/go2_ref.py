@@ -198,4 +198,4 @@ class Go2Ref(Go2):
         stance = self._leg_phases() > torch.pi
         rew = in_contact * stance
 
-        return torch.sum(rew.float(), dim=1) * (1 - self._switch) - 1
+        return torch.sum(rew.float(), dim=1) * (1 - self._switch)
