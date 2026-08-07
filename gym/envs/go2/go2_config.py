@@ -141,12 +141,6 @@ class Go2Cfg(LeggedRobotCfg):
         max_push_vel_xy = 0.5
         push_box_dims = [0.3, 0.1, 0.1]  # x,y,z [m]
 
-    class domain_rand:
-        randomize_friction = True
-        friction_range = [0.5, 1.0]
-        randomize_base_mass = False
-        added_mass_range = [-1.0, 1.0]
-
     class asset(LeggedRobotCfg.asset):
         file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
         foot_name = "foot"
@@ -186,13 +180,14 @@ class Go2Cfg(LeggedRobotCfg):
         tracking_sigma = 0.25
 
     class scaling(LeggedRobotCfg.scaling):
-        base_ang_vel = 0.3
+        base_ang_vel = 1.0
         base_lin_vel = BASE_HEIGHT_REF
-        dof_vel = 4 * [2.0, 2.0, 4.0]
+        dof_vel = 4 * [5.0, 5.0, 8.0]
         base_height = 0.3 / 2
-        dof_pos = 4 * [0.2, 0.3, 0.3]
+        dof_pos = 4 * [0.5, 0.5, 0.5]
         dof_pos_obs = dof_pos
-        dof_pos_target = 4 * [0.2, 0.3, 0.3]
+        dof_pos_obs_residual = 4 * [0.25, 0.25, 0.25]
+        dof_pos_target = 4 * [0.5, 0.5, 1.0]
         tau_ff = 4 * [18, 18, 28]
         commands = [3, 1, 3]
 
@@ -255,19 +250,19 @@ class Go2RunnerCfg(LeggedRobotRunnerCfg):
         class reward:
             class weights:
                 tracking_lin_vel = 4.0
-                tracking_ang_vel = 2.0
+                tracking_ang_vel = 2.0 * 2
                 lin_vel_z = 0.0
                 ang_vel_xy = 0.01
-                orientation = 1.0
-                torques = 5.0e-6
+                orientation = 1.0 * 0.7
+                torques = 5.0e-6 * 50
                 dof_vel = 0.0
-                min_base_height = 1.5
+                min_base_height = 1.5 * 0.8
                 action_rate = 0.1
-                action_rate2 = 0.01
+                action_rate2 = 0.01 * 50
                 stand_still = 0.0
                 dof_pos_limits = 0.0
-                feet_contact_forces = 0.0
-                dof_near_home = 0.0
+                feet_contact_forces = 0.0 + 0.07
+                dof_near_home = 0.0 + 0.05
 
             class termination_weight:
                 termination = 0.01
