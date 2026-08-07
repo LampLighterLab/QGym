@@ -54,6 +54,7 @@ def save_histogram_from_dict(state_dict):
             plt.ylabel("Occurrences")
             plt.title(state + " distribution")
             plt.savefig(state + ".png")
+            plt.close()
             return
         else:
             for col in range(data.shape[1]):
@@ -70,6 +71,7 @@ def save_histogram_from_dict(state_dict):
                     + " distribution"
                 )
                 plt.savefig("logs/" + state + "_col_" + str(col) + ".png")
+                plt.close()
 
 
 def save_histogram_from_env(env, state_list):
