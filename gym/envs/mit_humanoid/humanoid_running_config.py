@@ -17,9 +17,7 @@ class HumanoidRunningCfg(LeggedRobotCfg):
         episode_length_s = 5  # 100
 
     class terrain(LeggedRobotCfg.terrain):
-        curriculum = False
         mesh_type = "plane"
-        measure_heights = False
 
     class init_state(LeggedRobotCfg.init_state):
         reset_mode = "reset_to_range"
@@ -130,18 +128,11 @@ class HumanoidRunningCfg(LeggedRobotCfg):
         max_push_vel_xy = 0.5
         push_box_dims = [0.1, 0.2, 0.3]  # x,y,z [m]
 
-    class domain_rand(LeggedRobotCfg.domain_rand):
-        randomize_friction = False
-        friction_range = [0.5, 1.25]
-
-        randomize_base_mass = False
-        added_mass_range = [-1.0, 1.0]
-
     class asset(LeggedRobotCfg.asset):
-        # file = ('{LEGGED_GYM_ROOT_DIR}/resources/robots/rom/urdf/'
+        # file = ('{GYM_ROOT_DIR}/resources/robots/rom/urdf/'
         #         +'humanoid_fixed_arms_full.urdf')
         file = (
-            "{LEGGED_GYM_ROOT_DIR}/resources/robots/"
+            "{GYM_ROOT_DIR}/resources/robots/"
             + "mit_humanoid/urdf/humanoid_F_sf_learnt.urdf"
         )
         keypoints = ["base"]
@@ -166,15 +157,6 @@ class HumanoidRunningCfg(LeggedRobotCfg):
         fix_base_link = False
         disable_gravity = False
         disable_motors = False
-
-        # (1: disable, 0: enable...bitwise filter)
-        self_collisions = 0
-        collapse_fixed_joints = False
-        flip_visual_attachments = False
-
-        # Check GymDofDriveModeFlags
-        # (0: none, 1: pos tgt, 2: vel target, 3: effort)
-        default_dof_drive_mode = 3
 
     class reward_settings(LeggedRobotCfg.reward_settings):
         soft_dof_pos_limit = 0.9

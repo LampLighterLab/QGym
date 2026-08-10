@@ -5,6 +5,41 @@ from gym.envs.base.legged_robot_config import (
 
 BASE_HEIGHT_REF = 0.3
 
+MINI_CHEETAH_DOF_NAMES = [
+    "1_rf_haa",
+    "rf_hfe",
+    "rf_kfe",
+    "2_lf_haa",
+    "lf_hfe",
+    "lf_kfe",
+    "3_rh_haa",
+    "rh_hfe",
+    "rh_kfe",
+    "4_lh_haa",
+    "lh_hfe",
+    "lh_kfe",
+]
+MINI_CHEETAH_BODY_NAMES = [
+    "base",
+    "rf_hip",
+    "rf_thigh",
+    "rf_shank",
+    "rf_foot",
+    "lf_hip",
+    "lf_thigh",
+    "lf_shank",
+    "lf_foot",
+    "rh_hip",
+    "rh_thigh",
+    "rh_shank",
+    "rh_foot",
+    "lh_hip",
+    "lh_thigh",
+    "lh_shank",
+    "lh_foot",
+]
+MINI_CHEETAH_LEG_GROUPS = ["rf_leg", "lf_leg", "rh_leg", "lh_leg"]
+
 
 class MiniCheetahCfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
@@ -79,28 +114,35 @@ class MiniCheetahCfg(LeggedRobotCfg):
         max_push_vel_xy = 0.5
         push_box_dims = [0.3, 0.1, 0.1]  # x,y,z [m]
 
-    class domain_rand:
-        randomize_friction = True
-        friction_range = [0.5, 1.0]
-        randomize_base_mass = False
-        added_mass_range = [-1.0, 1.0]
-
     class asset(LeggedRobotCfg.asset):
         file = (
-            "{LEGGED_GYM_ROOT_DIR}/resources/robots/"
+            "{GYM_ROOT_DIR}/resources/robots/"
             + "mini_cheetah/urdf/mini_cheetah_simple.urdf"
         )
         foot_name = "foot"
         penalize_contacts_on = ["shank"]
         terminate_after_contacts_on = ["base"]
         end_effector_names = ["foot"]
-        collapse_fixed_joints = False
-        self_collisions = 1
-        flip_visual_attachments = False
         disable_gravity = False
         disable_motors = False
         joint_damping = 0.01
         rotor_inertia = [0.002268, 0.002268, 0.005484] * 4
+
+        class robot_layout:
+            version = "mini_cheetah_v1"
+            dof_names = MINI_CHEETAH_DOF_NAMES
+            actuated_dof_names = MINI_CHEETAH_DOF_NAMES
+            body_names = MINI_CHEETAH_BODY_NAMES
+            dof_groups = {
+                "rf_leg": MINI_CHEETAH_DOF_NAMES[0:3],
+                "lf_leg": MINI_CHEETAH_DOF_NAMES[3:6],
+                "rh_leg": MINI_CHEETAH_DOF_NAMES[6:9],
+                "lh_leg": MINI_CHEETAH_DOF_NAMES[9:12],
+                "abad": MINI_CHEETAH_DOF_NAMES[0:12:3],
+            }
+            body_groups = {
+                "feet": ["rf_foot", "lf_foot", "rh_foot", "lh_foot"],
+            }
 
     class reward_settings(LeggedRobotCfg.reward_settings):
         soft_dof_pos_limit = 0.9
@@ -121,8 +163,26 @@ class MiniCheetahCfg(LeggedRobotCfg):
         tau_ff = 4 * [18, 18, 28]
         commands = [3, 1, 3]
 
-    class mjmodel_settings:
-        njmax = 90
+    class mjspec_attributes:
+        # Constraint-row capacity per world.  With fusestatic disabled the
+        # warp runtime demands 160 at 4096 envs (measured 2026-07-11,
+        # "nefc overflow" warnings); 200 leaves headroom for gaits with
+        # more simultaneous contacts.  jt/port's original value was 90,
+        # tuned before fusestatic.
+        njmax = 200
+
+    class mjspec_option_attributes:
+        # Deliberate accuracy/throughput tradeoff (measured 2026-07-11,
+        # 4096 envs, RTX 4080): 50 → 13.2k steps/s with rare
+        # "ccd_iterations needs to be increased" warnings on isolated
+        # frames; 100 → 7.1k steps/s and still warns occasionally.
+        ccd_iterations = 50
+
+    class vsim_attributes:
+        # Sixteen rigid/LCP iterations substantially reduce the single-step
+        # impact spike and improve task contact-mask agreement. This is a
+        # general convergence setting; material properties remain unchanged.
+        solver_iterations = 16
 
 
 class MiniCheetahRunnerCfg(LeggedRobotRunnerCfg):

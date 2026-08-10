@@ -29,21 +29,15 @@ class MiniCheetahSACCfg(MiniCheetahRefCfg):
     class push_robots(MiniCheetahRefCfg.push_robots):
         pass
 
-    class domain_rand(MiniCheetahRefCfg.domain_rand):
-        pass
-
     class asset(MiniCheetahRefCfg.asset):
         file = (
-            "{LEGGED_GYM_ROOT_DIR}/resources/robots/"
+            "{GYM_ROOT_DIR}/resources/robots/"
             + "mini_cheetah/urdf/mini_cheetah_simple.urdf"
         )
         foot_name = "foot"
         penalize_contacts_on = ["shank"]
         terminate_after_contacts_on = ["base"]
         end_effector_names = ["foot"]
-        collapse_fixed_joints = False
-        self_collisions = 1
-        flip_visual_attachments = False
         disable_gravity = False
         disable_motors = False
         joint_damping = 0.1

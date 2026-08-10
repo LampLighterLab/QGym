@@ -31,10 +31,7 @@ class CartpoleCfg(FixedRobotCfg):
         }
 
     class control(FixedRobotCfg.control):
-        actuated_joints_mask = [
-            1,  # slider_to_cart
-            0,
-        ]  # cart_to_pole
+        actuated_joint_names = ["slider_to_cart"]
         stiffness = {"slider_to_cart": 0.0}
         damping = {"slider_to_cart": 0.0}
         ctrl_frequency = 250
@@ -42,8 +39,7 @@ class CartpoleCfg(FixedRobotCfg):
 
     class asset(FixedRobotCfg.asset):
         # * Things that differ
-        file = "{LEGGED_GYM_ROOT_DIR}/resources/robots/" + "cartpole/urdf/cartpole.urdf"
-        flip_visual_attachments = False
+        file = "{GYM_ROOT_DIR}/resources/robots/" + "cartpole/urdf/cartpole.urdf"
         disable_gravity = False
         disable_motors = False  # all torques set to 0
 

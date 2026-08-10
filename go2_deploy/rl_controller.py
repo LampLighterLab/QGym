@@ -1,13 +1,15 @@
 from gym.utils.task_registry import task_registry
 from gym.utils.helpers import set_seed
 import gym.envs  # noqa: F401
+from go2_deploy.deploy_config import DeployConfig
 
 import random
 
 
 # Helper function to load actor network from logs/go2/run_name (default: most recent)
 def setup_actor(run_name=None):
-    env_cfg, train_cfg = task_registry.get_cfgs(name="go2")
+    deploy_cfg = DeployConfig()
+    env_cfg, train_cfg = task_registry.get_cfgs(name=deploy_cfg.task_name)
 
     env_cfg.env.num_envs = 1
     env_cfg.env.episode_length_s = 99999
@@ -32,8 +34,8 @@ def setup_actor(run_name=None):
     task_registry.set_log_dir_name(train_cfg)
     set_seed(env_cfg.seed)
 
-    env = task_registry.make_env_mujoco(
-        name="go2", env_cfg=env_cfg, device="cpu", headless=True
+    env = task_registry.make_env(
+        name=deploy_cfg.task_name, env_cfg=env_cfg, device="cpu", headless=True
     )
 
     runner = task_registry.make_alg_runner(env, train_cfg)

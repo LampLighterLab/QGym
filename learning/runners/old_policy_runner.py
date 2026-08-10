@@ -3,7 +3,7 @@ import torch
 
 from learning.utils import Logger
 from .BaseRunner import BaseRunner
-from learning.algorithms import PPO  # noqa: F401
+from learning.algorithms import get_algorithm_class
 from learning.modules import ActorCritic, Actor, Critic
 
 logger = Logger()
@@ -27,7 +27,7 @@ class OldPolicyRunner(BaseRunner):
         actor = Actor(num_actor_obs, num_actions, **self.actor_cfg)
         critic = Critic(num_critic_obs, **self.critic_cfg)
         actor_critic = ActorCritic(actor, critic)
-        alg_class = eval(self.cfg["algorithm_class_name"])
+        alg_class = get_algorithm_class(self.cfg["algorithm_class_name"])
         self.alg = alg_class(actor_critic, device=self.device, **self.alg_cfg)
 
     def learn(self):
@@ -145,7 +145,7 @@ class OldPolicyRunner(BaseRunner):
         self.alg.actor_critic.eval()
 
     def get_inference_actions(self):
-        obs = self.get_noisy_obs(self.actor_cfg["obs"], self.actor_cfg["noise"])
+        obs = self.get_obs(self.actor_cfg["obs"])
         return self.alg.actor_critic.actor.act_inference(obs)
 
     def export(self, path):

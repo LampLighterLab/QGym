@@ -1,6 +1,6 @@
 """Minimal SimBackend implementation for unit tests.
 
-No IsaacGym, no MuJoCo, no Warp — just torch tensors with trivially-correct
+No physics engine — just torch tensors with trivially-correct
 physics (Euler integration of free-fall under gravity for a 1-DOF pendulum).
 This lets us test the SimBackend contract and downstream task logic without
 any physics-engine dependency.
@@ -8,6 +8,7 @@ any physics-engine dependency.
 
 import torch
 
+from gym.envs.base.robot_layout import RobotLayout
 from gym.envs.base.sim_backend import SimBackend
 
 
@@ -38,6 +39,12 @@ class MockBackend(SimBackend):
         self._dt = dt
         self._gravity = gravity
         self._inertia = mass * length**2
+        self._robot_layout = RobotLayout(
+            version="mock_pendulum_v1",
+            dof_names=("theta",),
+            actuated_dof_names=("theta",),
+            body_names=("base", "pole"),
+        )
 
         # State tensors: [num_envs, 1]
         self._dof_pos_t = torch.zeros(num_envs, 1, device=device)

@@ -2,12 +2,14 @@ from abc import ABC, abstractmethod
 
 import torch
 
+from gym.envs.base.robot_layout import RobotLayout
+
 
 class SimBackend(ABC):
     """Abstract physics backend interface.
 
     Separates physics-engine specifics from RL task logic, enabling multiple
-    backends (IsaacGym/PhysX, MuJocoWarp, plain MuJoCo for Mac/CI).
+    backends (MuJoCo Warp, plain MuJoCo for Mac/CI, and optional VSim).
 
     Lifecycle
     ---------
@@ -28,11 +30,8 @@ class SimBackend(ABC):
         simulator, and acquire state tensors.
 
         *task* is the owning FixedRobot/LeggedRobot instance.  Backends that
-        need per-environment property callbacks call
-        ``task._process_rigid_shape_props``, ``task._process_dof_props``, and
-        ``task._process_rigid_body_props`` during setup; those callbacks may
-        store results back on the task (e.g. joint limits).  Pass ``None`` if
-        no callbacks are needed (e.g. unit tests).
+        need task-specific joint limits call ``task._process_dof_props`` during
+        setup. Pass ``None`` if no callback is needed (e.g. unit tests).
         """
 
     # ── Metadata (valid after setup) ───────────────────────────────────────
@@ -52,6 +51,17 @@ class SimBackend(ABC):
     @property
     @abstractmethod
     def body_names(self) -> list: ...
+
+    @property
+    def robot_layout(self) -> RobotLayout:
+        """Canonical task-facing robot layout, valid after setup()."""
+        try:
+            return self._robot_layout
+        except AttributeError as exc:
+            raise RuntimeError(
+                f"{type(self).__name__}.robot_layout accessed before the backend "
+                "configured its canonical robot layout"
+            ) from exc
 
     @abstractmethod
     def find_body_index(self, name: str) -> int:
@@ -143,7 +153,7 @@ class SimBackend(ABC):
         """
 
     def set_all_root_states(self) -> None:
-        """Commit root_states for all environments (used by push_robots).
+        """Commit root_states for all environments.
 
         Default no-op — fixed-base robots don't need this.
         """
@@ -155,16 +165,25 @@ class SimBackend(ABC):
     def device(self) -> str:
         """The PyTorch device string ('cpu', 'cuda:0', …)."""
 
-    # IsaacGym shims — non-IsaacGym backends leave these as None.
-    # BaseTask.gym / BaseTask.sim forward here for LeggedRobot compatibility.
-    gym = None
-    sim = None
-
     def render(self, sync_frame_time: bool = True) -> None:
         pass
 
     def set_camera(self, position, lookat) -> None:
         pass
+
+    def build_contact_indices(self, name_patterns: list, device: str) -> torch.Tensor:
+        """Body indices whose names contain any of ``name_patterns``.
+
+        Shared by every backend: cfg.asset.penalize_contacts_on /
+        terminate_after_contacts_on are substring matches over body_names.
+        """
+        indices = [
+            i
+            for pattern in name_patterns
+            for i, name in enumerate(self.body_names)
+            if pattern in name
+        ]
+        return torch.tensor(indices, dtype=torch.long, device=device)
 
     def close(self) -> None:
         pass

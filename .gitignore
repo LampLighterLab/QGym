@@ -1,6 +1,4 @@
 *.pt
-*.png
-isaacgym/*
 *venv*
 logs/
 artifacts/
@@ -86,3 +84,12 @@ venv.bak/
 # Smooth exploration
 gym/smooth_exploration/data*
 gym/smooth_exploration/figures*
+
+# vsim
+resources/robots/*/vsim/*.vsim
+thirdparty/vlearn
+
+# Local simulator and notebook outputs
+MUJOCO_LOG.TXT
+pendulum_rollout.png
+notebooks/__marimo__/

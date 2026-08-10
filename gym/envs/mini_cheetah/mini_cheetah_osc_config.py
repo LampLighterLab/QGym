@@ -20,7 +20,6 @@ class MiniCheetahOscCfg(MiniCheetahCfg):
 
     class terrain(MiniCheetahCfg.terrain):
         mesh_type = "plane"
-        # mesh_type = 'trimesh'  # none, plane, heightfield or trimesh
 
     class init_state(MiniCheetahCfg.init_state):
         timeout_reset_ratio = 0.75
@@ -112,33 +111,19 @@ class MiniCheetahOscCfg(MiniCheetahCfg):
         max_push_vel_xy = 0.05
         push_box_dims = [0.2, 0.2, 0.2]  # x,y,z [m]
 
-    class domain_rand(MiniCheetahCfg.domain_rand):
-        randomize_friction = True
-        friction_range = [0.4, 1.0]
-        randomize_base_mass = False
-        lower_mass_offset = -0.5  # kg
-        upper_mass_offset = 2.0
-        lower_z_offset = 0.0  # m
-        upper_z_offset = 0.2
-        lower_x_offset = 0.0
-        upper_x_offset = 0.0
-
     class asset(MiniCheetahCfg.asset):
         shank_length_diff = 0  # Units in cm
-        # file = "{LEGGED_GYM_ROOT_DIR}/resources/robots/" \
+        # file = "{GYM_ROOT_DIR}/resources/robots/" \
         #     + "mini_cheetah/urdf/mini_cheetah_" \
         #     + str(shank_length_diff) + ".urdf"
         file = (
-            "{LEGGED_GYM_ROOT_DIR}/resources/robots/"
+            "{GYM_ROOT_DIR}/resources/robots/"
             + "mini_cheetah/urdf/mini_cheetah_simple.urdf"
         )
         foot_name = "foot"
         penalize_contacts_on = ["thigh", "shank"]
         terminate_after_contacts_on = ["base"]
-        collapse_fixed_joints = False
         fix_base_link = False
-        self_collisions = 1  # 1 to disable, 0 to enable...bitwise filter
-        flip_visual_attachments = False
         disable_gravity = False
         disable_motors = False  # all torques set to 0
 
@@ -257,30 +242,13 @@ class MiniCheetahOscRunnerCfg(MiniCheetahRunnerCfg):
                 stance_velocity = 0.0
                 coupled_grf = 0.0  # 8.
                 enc_pace = 0.0
-                cursorial = 0.25
                 standing_torques = 0.0  # 1.e-5
 
             class termination_weight:
                 termination = 0.15
 
-    class algorithm:
-        # training params
-        value_loss_coef = 1.0
-        use_clipped_value_loss = True
-        clip_param = 0.2
-        entropy_coef = 0.01
-        num_learning_epochs = 4
-        # mini batch size = num_envs*nsteps/nminibatches
-        num_mini_batches = 8
-        max_gradient_steps = 32
-        learning_rate = 1.0e-4
-        schedule = "adaptive"  # can be adaptive, fixed
-        discount_horizon = 1.0
-        GAE_bootstrap_horizon = 2.0
-        desired_kl = 0.01
-        max_grad_norm = 1.0
-        lr_range = [1e-5, 5e-3]
-        lr_ratio = 1.5
+    class algorithm(MiniCheetahRunnerCfg.algorithm):
+        pass
 
     class runner(MiniCheetahRunnerCfg.runner):
         run_name = ""

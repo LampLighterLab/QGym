@@ -4,6 +4,7 @@ Uses the mini_cheetah URDF (12 actuated DOFs + free joint).
 Tests run against both MuJocoCPUBackend and MuJocoWarpBackend.
 """
 
+import numpy as np
 import pytest
 import torch
 
@@ -71,6 +72,39 @@ class TestLeggedQuaternion:
 
 
 class TestLeggedPhysics:
+    def test_ground_friction_uses_mujoco_slot_semantics(self, legged_cpu_backend):
+        """Ground friction is [sliding, torsional, rolling], not static/dynamic."""
+        import mujoco
+
+        model = legged_cpu_backend._mjm
+        plane_ids = np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE)
+        assert len(plane_ids) == 1
+        np.testing.assert_allclose(
+            model.geom_friction[plane_ids[0]],
+            [1.0, 0.005, 0.0001],
+        )
+
+    def test_configured_friction_is_shared_by_robot_and_ground(self):
+        """Robot defaults must not override terrain coefficients below one."""
+        pytest.importorskip("mujoco")
+        from gym.envs.base.mujoco_cpu_backend import MuJocoCPUBackend
+        from tests.unit_tests.conftest import _make_mini_cheetah_cfg
+
+        cfg = _make_mini_cheetah_cfg()
+        cfg.terrain.static_friction = 0.4
+        cfg.terrain.dynamic_friction = 0.35
+        backend = MuJocoCPUBackend()
+        backend.setup(cfg, num_envs=1, device="cpu", task=None)
+        try:
+            np.testing.assert_allclose(
+                backend._mjm.geom_friction,
+                np.broadcast_to(
+                    [0.35, 0.005, 0.0001], backend._mjm.geom_friction.shape
+                ),
+            )
+        finally:
+            backend.close()
+
     def test_robot_above_ground(self, legged_cpu_backend):
         """Robot shouldn't fall through the ground plane."""
         b = legged_cpu_backend
@@ -123,6 +157,7 @@ class TestLeggedReset:
 # ── Warp backend (same tests) ─────────────────────────────────────────────────
 
 
+@pytest.mark.warp
 class TestLeggedWarpShapes:
     def test_num_dof(self, legged_warp_backend):
         assert legged_warp_backend.num_dof == 12
@@ -146,13 +181,12 @@ class TestLeggedWarpShapes:
 # ── Cross-backend comparison ──────────────────────────────────────────────────
 
 
+@pytest.mark.warp
 class TestLeggedCrossBackend:
     @pytest.fixture
     def cpu_and_warp(self):
-        pytest.importorskip("mujoco")
-        pytest.importorskip("mujoco_warp")
         if not torch.cuda.is_available():
-            pytest.skip("CUDA required for cross-backend comparison")
+            pytest.fail("Warp tests requested but CUDA is not available", pytrace=False)
 
         from tests.unit_tests.conftest import _make_mini_cheetah_cfg
         from gym.envs.base.mujoco_cpu_backend import MuJocoCPUBackend
@@ -163,10 +197,26 @@ class TestLeggedCrossBackend:
         cpu.setup(cfg, num_envs=4, device="cpu", task=None)
         warp = MuJocoWarpBackend()
         warp.setup(cfg, num_envs=4, device="cuda:0", task=None)
-        return cpu, warp
+        yield cpu, warp
+        cpu.close()
+        warp.close()
 
     def test_trajectories_match(self, cpu_and_warp):
-        """CPU and Warp backends should produce near-identical states."""
+        """CPU and Warp backends should produce near-identical states.
+
+        Contact-rich floating-base rollouts are chaotic: float-level
+        implementation differences grow ~10x per 25 steps once contacts
+        engage (measured 2026-07-11: ~1e-6 through step 100, ~3e-2 by step
+        200).  A single flat tolerance either misses systematic modeling
+        bugs (too loose early) or trips on chaos (too tight late), so the
+        check is split:
+
+        - steps 1-100 (pre-chaos): 1e-4 — any real mismatch (wrong mass,
+          inertia, quaternion swizzle, missing contact) exceeds this
+          immediately; measured margin ~10x.
+        - steps 101-200: 0.2 — blow-up detector only; chaos alone reaches
+          ~5e-2 at step 200.
+        """
         cpu, warp = cpu_and_warp
         N = 4
 
@@ -186,9 +236,8 @@ class TestLeggedCrossBackend:
             pos_err = (cpu.dof_pos - warp.dof_pos.cpu()).abs().max().item()
             root_err = (cpu.root_states - warp.root_states.cpu()).abs().max().item()
 
-            # Floating-base with contacts accumulates float diffs faster
-            # than fixed-base pendulum; use looser tolerance
-            assert pos_err < 0.01, f"DOF pos diverged at step {step}: {pos_err:.2e}"
-            assert root_err < 0.01, (
+            tol = 1e-4 if step < 100 else 0.2
+            assert pos_err < tol, f"DOF pos diverged at step {step}: {pos_err:.2e}"
+            assert root_err < tol, (
                 f"Root states diverged at step {step}: {root_err:.2e}"
             )

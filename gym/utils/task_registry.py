@@ -31,27 +31,15 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import os
-import importlib
 import platform
 from datetime import datetime
-
-try:
-    from isaacgym import gymapi, gymutil
-except ImportError:
-    gymapi = None
-    gymutil = None
 from typing import Tuple
 
-from learning.runners import *  # noqa: F403
+from learning.runners import get_runner_class
 from learning.utils import set_discount_from_horizon
 
-from gym import LEGGED_GYM_ROOT_DIR
-from .helpers import (
-    update_cfg_from_args,
-    class_to_dict,
-    get_load_path,
-    set_seed,
-)
+from gym import GYM_ROOT_DIR
+from .helpers import class_to_dict, get_load_path, set_seed
 
 
 class TaskRegistry:
@@ -59,11 +47,6 @@ class TaskRegistry:
         self.task_classes = {}
         self.env_cfgs = {}
         self.train_cfgs = {}
-        # sim_cfg is populated lazily by update_sim_cfg() (IsaacGym path only).
-        # Initialised as an empty dict so set_control_and_sim_dt can write to it
-        # without triggering the gym.envs circular import at module load time.
-        self.sim_cfg = {}
-        self.sim = {}
 
     def register(self, name: str, task_class, env_cfg, train_cfg):
         self.task_classes[name] = task_class
@@ -73,73 +56,40 @@ class TaskRegistry:
     def get_task_class(self, name: str):
         return self.task_classes[name]
 
-    def get_cfgs(self, name) -> Tuple:
+    def get_cfgs(
+        self,
+        name,
+        *,
+        original_cfg=False,
+        experiment_name=None,
+        load_run=None,
+    ) -> Tuple:
         env_cfg = self.env_cfgs[name]
         train_cfg = self.train_cfgs[name]
-        return env_cfg, train_cfg
+        if original_cfg:
+            from .original_cfg import load_original_cfgs, original_cfg_source_dir
 
-    def set_registry_to_original_cfg(self, train_cfg, args):
-        from gym.envs import (
-            task_dict,
-            class_dict,
-            config_dict,
-            runner_config_dict,
-        )
-
-        run_path = os.path.dirname(
-            get_load_path(
-                name=train_cfg.runner.experiment_name,
-                load_run=train_cfg.runner.load_run,
-                checkpoint=train_cfg.runner.checkpoint,
+            selected_experiment = experiment_name or train_cfg.runner.experiment_name
+            selected_run = train_cfg.runner.load_run if load_run is None else load_run
+            env_cfg, train_cfg, run_dir = load_original_cfgs(
+                name,
+                selected_experiment,
+                selected_run,
             )
-        )
-        original_cfg_path = os.path.join(run_path, "files", "gym", "envs")
 
-        class_name = task_dict[args.task][0]
-        class_path = original_cfg_path + class_dict[class_name]
-        spec = importlib.util.spec_from_file_location(
-            class_name, class_path.replace(".", "/") + ".py"
-        )
-        class_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(class_module)
-
-        config_name = task_dict[args.task][1]
-        config_path = original_cfg_path + config_dict[config_name]
-        spec = importlib.util.spec_from_file_location(
-            config_name, config_path.replace(".", "/") + ".py"
-        )
-        config_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(config_module)
-
-        runner_config_name = task_dict[args.task][2]
-        runner_config_path = original_cfg_path + runner_config_dict[runner_config_name]
-        spec = importlib.util.spec_from_file_location(
-            runner_config_name, runner_config_path.replace(".", "/") + ".py"
-        )
-        runner_config_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(runner_config_module)
-
-        task_registry.register(
-            args.task,
-            getattr(class_module, task_dict[args.task][0]),
-            getattr(config_module, task_dict[args.task][1]),
-            getattr(runner_config_module, task_dict[args.task][2]),
-        )
-
-    def create_cfgs(self, args):
-        env_cfg, train_cfg = self.get_cfgs(name=args.task)
-        self.update_and_parse_cfgs(env_cfg, train_cfg, args)
-        if args.original_cfg:
-            self.set_registry_to_original_cfg(train_cfg, args)
-            env_cfg, train_cfg = self.get_cfgs(name=args.task)
-            self.update_and_parse_cfgs(env_cfg, train_cfg, args)
-        self.set_log_dir_name(train_cfg)
+            # Pin the source run. Otherwise selecting "latest" again after a
+            # new log directory is created could target the wrong directory.
+            train_cfg.runner.experiment_name = selected_experiment
+            train_cfg.runner.load_run = run_dir.name
+            source_dir = original_cfg_source_dir(run_dir)
+            train_cfg._original_cfg_source_dir = str(source_dir)
+            print(f"Loaded original configs from: {source_dir}")
         return env_cfg, train_cfg
 
     def set_log_dir_name(self, train_cfg, log_root="default"):
         if log_root == "default":
             log_root = os.path.join(
-                LEGGED_GYM_ROOT_DIR, "logs", train_cfg.runner.experiment_name
+                GYM_ROOT_DIR, "logs", train_cfg.runner.experiment_name
             )
             log_dir = os.path.join(
                 log_root,
@@ -151,11 +101,6 @@ class TaskRegistry:
             log_dir = None
         train_cfg.log_dir = log_dir
 
-    def update_and_parse_cfgs(self, env_cfg, train_cfg, args):
-        update_cfg_from_args(env_cfg, train_cfg, args)
-        self.convert_frequencies_to_params(env_cfg, train_cfg)
-        self.update_sim_cfg(args)
-
     def convert_frequencies_to_params(self, env_cfg, train_cfg):
         self.set_control_and_sim_dt(env_cfg, train_cfg)
         self.set_discount_rates(train_cfg, env_cfg.control.ctrl_dt)
@@ -166,7 +111,6 @@ class TaskRegistry:
         )
         env_cfg.control.ctrl_dt = 1.0 / env_cfg.control.ctrl_frequency
         env_cfg.sim_dt = env_cfg.control.ctrl_dt / env_cfg.control.decimation
-        self.sim_cfg["dt"] = env_cfg.sim_dt
         if env_cfg.sim_dt != 1.0 / env_cfg.control.desired_sim_frequency:
             print(
                 f"****** Simulation dt adjusted from "
@@ -186,72 +130,28 @@ class TaskRegistry:
             hrzn = train_cfg.algorithm.GAE_bootstrap_horizon
             train_cfg.algorithm.lam = set_discount_from_horizon(dt, hrzn)
 
-    def update_sim_cfg(self, args):
-        self.sim["sim_device"] = args.sim_device
-        self.sim["sim_device_id"] = args.sim_device_id
-        self.sim["graphics_device_id"] = args.graphics_device_id
-        self.sim["physics_engine"] = args.physics_engine
-        self.sim["headless"] = args.headless
-        if self.sim["headless"]:
-            self.sim["graphics_device_id"] = -1
-        self.sim["params"] = gymapi.SimParams()
-        self.sim["params"].physx.use_gpu = args.use_gpu
-        self.sim["params"].physx.num_subscenes = args.subscenes
-        self.sim["params"].use_gpu_pipeline = args.use_gpu_pipeline
-        gymutil.parse_sim_config(self.sim_cfg, self.sim["params"])
-
-    def make_gym_and_sim(self):
-        self.make_gym()
-        self.make_sim()
-
-    def make_gym(self):
-        self._gym = gymapi.acquire_gym()
-
-    def make_sim(self):
-        self._sim = self._gym.create_sim(
-            self.sim["sim_device_id"],
-            self.sim["graphics_device_id"],
-            self.sim["physics_engine"],
-            self.sim["params"],
-        )
-
-    def make_env(self, name, env_cfg):
-        if name in self.task_classes:
-            task_class = self.get_task_class(name)
-        else:
-            raise ValueError(f"Task with name: {name} was not registered")
-        set_seed(env_cfg.seed)
-        env = task_class(
-            gym=self._gym,
-            sim=self._sim,
-            cfg=env_cfg,
-            sim_params=self.sim["params"],
-            sim_device=self.sim["sim_device"],
-            headless=self.sim["headless"],
-        )
-        return env
-
-    def make_env_mujoco(
-        self, name: str, env_cfg, device: str = "cpu", headless: bool = True
+    def make_env(
+        self,
+        name: str,
+        env_cfg,
+        device: str = "cpu",
+        headless: bool = True,
+        backend: str = "mujoco",
     ):
-        """Instantiate a task using a MuJoCo backend (no IsaacGym required).
+        """Instantiate a task using a supported physics backend.
 
-        Selects MuJocoWarpBackend or MuJocoCPUBackend based on device.
-        Passes the constructed backend as the ``backend`` kwarg to the task
-        constructor so FixedRobot/LeggedRobot skips IsaacGymBackend.
+        ``backend="mujoco"`` selects MuJocoWarpBackend or MuJocoCPUBackend
+        based on device; ``backend="vsim"`` selects VSimBackend (CUDA-only).
         """
         if name in self.task_classes:
             task_class = self.get_task_class(name)
         else:
             raise ValueError(f"Task with name: {name} was not registered")
         set_seed(env_cfg.seed)
-        backend = select_backend(env_cfg, device)
+        backend = select_backend(env_cfg, device, backend)
         env = task_class(
-            gym=None,
-            sim=None,
             cfg=env_cfg,
-            sim_params=None,
-            sim_device=device,
+            device=device,
             headless=headless,
             backend=backend,
         )
@@ -259,7 +159,7 @@ class TaskRegistry:
 
     def make_alg_runner(self, env, train_cfg):
         train_cfg_dict = class_to_dict(train_cfg)
-        runner_class = eval(train_cfg.runner_class_name)
+        runner_class = get_runner_class(train_cfg.runner_class_name)
         runner = runner_class(env, train_cfg_dict, train_cfg.runner.device)
         # * save resume path before creating a new log_dir
         if train_cfg.runner.resume:
@@ -273,12 +173,21 @@ class TaskRegistry:
         return runner
 
 
-def select_backend(cfg, device: str):
-    """Choose a physics backend based on platform and available packages.
+def select_backend(cfg, device: str, backend: str = "mujoco"):
+    """Choose a physics backend. Fail-fast: no silent fallbacks.
 
-    Priority: Mac → MuJocoCPUBackend; mujoco_warp available → MuJocoWarpBackend;
-    otherwise → MuJocoCPUBackend.
+    backend="mujoco": cuda → MuJocoWarpBackend, otherwise MuJocoCPUBackend.
+    backend="vsim":   VSimBackend (CUDA-only; vlearn must be installed and
+                      the process started with .env.vsim — see that file).
     """
+    if backend == "vsim":
+        if not device.startswith("cuda"):
+            raise RuntimeError(f"backend='vsim' is CUDA-only, got device={device!r}")
+        from gym.envs.base.vsim_backend import VSimBackend
+
+        return VSimBackend()
+    if backend != "mujoco":
+        raise ValueError(f"unknown backend {backend!r} (mujoco | vsim)")
     if device.startswith("cuda"):
         from gym.envs.base.mujoco_warp_backend import MuJocoWarpBackend
 

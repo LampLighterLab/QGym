@@ -22,23 +22,7 @@ class BaseTask(TaskSkeleton):
 
         super().__init__(num_envs=cfg.env.num_envs, device=device)
 
-        # Kept for backward compat (checked by check_exit and legacy code).
-        self.enable_viewer_sync = True
         self.exit = False
-
-    # ── Physics-engine shims ────────────────────────────────────────────────
-    # LeggedRobot still calls self.gym.* and self.sim.* directly while its
-    # migration to SimBackend is pending (Phase 3).  These properties route
-    # those calls through the backend without changing any call sites.
-    # TODO Phase 3: remove once LeggedRobot is fully migrated.
-
-    @property
-    def gym(self):
-        return self._backend.gym
-
-    @property
-    def sim(self):
-        return self._backend.sim
 
     # ── Rendering ────────────────────────────────────────────────────────────
 

@@ -5,15 +5,12 @@ class FixedRobotCfg(BaseConfig):
     class env:
         num_envs = 4096
         num_actuators = 1
-        env_spacing = 4.0  # not used with heightfields/trimeshes
+        env_spacing = 4.0
         root_height = 2.0
         episode_length_s = 4  # episode length in seconds
 
     class terrain:
-        mesh_type = "none"
-        horizontal_scale = 0.1  # [m]
-        vertical_scale = 0.005  # [m]
-        border_size = 25  # [m]
+        mesh_type = None
         static_friction = 1.0
         dynamic_friction = 1.0
         restitution = 0.0
@@ -36,7 +33,7 @@ class FixedRobotCfg(BaseConfig):
         stiffness = {"joint_a": 10.0}  # [N*m/rad]
         damping = {"joint_a": 0.5}  # [N*m*s/rad]
 
-        actuated_joints_mask = []  # for each dof: 1 if actuated, 0 if passive
+        actuated_joint_names = []
 
         ctrl_frequency = 100
         desired_sim_frequency = 100
@@ -47,28 +44,7 @@ class FixedRobotCfg(BaseConfig):
         terminate_after_contacts_on = []
         disable_gravity = False
         disable_motors = False
-        # * merge bodies connected by fixed joints.
-        # * Specific fixed joints can be kept by adding
-        # * " <... dont_collapse="true">
-        collapse_fixed_joints = True
         fix_base_link = True  # fix the base of the robot
-        # * see GymDofDriveModeFlags
-        # * (0 is none, 1 is pos tgt, 2 is vel tgt, 3 effort)
-        default_dof_drive_mode = 3
-        self_collisions = 0  # 1 to disable, 0 to enable...bitwise filter
-        # * replace collision cylinders with capsules,
-        # * leads to faster/more stable simulation
-        replace_cylinder_with_capsule = True
-        # * Some .obj meshes must be flipped from y-up to z-up
-        flip_visual_attachments = True
-
-        density = 0.001
-        angular_damping = 0.0
-        linear_damping = 0.0
-        max_angular_velocity = 1000.0
-        max_linear_velocity = 1000.0
-        armature = 0.0
-        thickness = 0.01
         rotor_inertia = 0.0
         joint_damping = 0.0
 
@@ -92,28 +68,17 @@ class FixedRobotCfg(BaseConfig):
         ref_env = 0
         pos = [10, 0, 6]  # [m]
         lookat = [11.0, 5, 3.0]  # [m]
-        record = False
+        # MuJoCo passive viewer only: its side panels bind most letters to
+        # visualisation toggles, which collide with keyboard teleop (see
+        # gym/utils/interfaces/teleop_bindings.py).  Off by default;
+        # scripts/play.py --viewer_ui turns them back on.
+        show_ui = False
 
     class sim:
         dt = 0.005
         substeps = 1
         gravity = [0.0, 0.0, -9.81]  # [m/s^2]
         up_axis = 1  # 0 is y, 1 is z
-
-        class physx:
-            num_threads = 10
-            solver_type = 1  # 0: pgs, 1: tgs
-            num_position_iterations = 4
-            num_velocity_iterations = 0
-            contact_offset = 0.01  # [m]
-            rest_offset = 0.0  # [m]
-            bounce_threshold_velocity = 0.5  # 0.5 [m/s]
-            max_depenetration_velocity = 10.0
-            # * 2**24 -> needed for 8000 envs and more
-            max_gpu_contact_pairs = 2**23
-            default_buffer_size_multiplier = 5
-            # * 0: never, 1: last sub-step, 2: all sub-steps (default=2)
-            contact_collection = 2
 
 
 class FixedRobotCfgPPO(BaseConfig):

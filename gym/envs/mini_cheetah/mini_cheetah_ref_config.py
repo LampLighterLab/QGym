@@ -1,6 +1,7 @@
 from gym.envs.mini_cheetah.mini_cheetah_config import (
     MiniCheetahCfg,
     MiniCheetahRunnerCfg,
+    MINI_CHEETAH_LEG_GROUPS,
 )
 
 BASE_HEIGHT_REF = 0.33
@@ -10,14 +11,14 @@ class MiniCheetahRefCfg(MiniCheetahCfg):
     class env(MiniCheetahCfg.env):
         num_envs = 2000
         num_actuators = 12
-        episode_length_s = 5.0
+        episode_length_s = 10.0
 
     class terrain(MiniCheetahCfg.terrain):
         pass
 
     class init_state(MiniCheetahCfg.init_state):
         ref_traj = (
-            "{LEGGED_GYM_ROOT_DIR}/resources/robots/"
+            "{GYM_ROOT_DIR}/resources/robots/"
             + "mini_cheetah/trajectories/single_leg.csv"
         )
 
@@ -25,8 +26,15 @@ class MiniCheetahRefCfg(MiniCheetahCfg):
         # * PD Drive parameters:
         stiffness = {"haa": 20.0, "hfe": 20.0, "kfe": 20.0}
         damping = {"haa": 0.5, "hfe": 0.5, "kfe": 0.5}
-        gait_freq = 3.0
-        ctrl_frequency = 50
+        gait_freq = 2.5
+        reference_leg_groups = MINI_CHEETAH_LEG_GROUPS
+        gait_phase_offsets = {
+            "rf_leg": 0.0,
+            "lf_leg": 0.5,
+            "rh_leg": 0.5,
+            "lh_leg": 0.0,
+        }
+        ctrl_frequency = 100
         desired_sim_frequency = 500
 
     class commands(MiniCheetahCfg.commands):
@@ -35,21 +43,15 @@ class MiniCheetahRefCfg(MiniCheetahCfg):
     class push_robots(MiniCheetahCfg.push_robots):
         pass
 
-    class domain_rand(MiniCheetahCfg.domain_rand):
-        pass
-
     class asset(MiniCheetahCfg.asset):
         file = (
-            "{LEGGED_GYM_ROOT_DIR}/resources/robots/"
+            "{GYM_ROOT_DIR}/resources/robots/"
             + "mini_cheetah/urdf/mini_cheetah_simple.urdf"
         )
         foot_name = "foot"
         penalize_contacts_on = ["shank"]
         terminate_after_contacts_on = ["base", "thigh"]
-        collapse_fixed_joints = False
         fix_base_link = False
-        self_collisions = 1
-        flip_visual_attachments = False  # deprecated?
         disable_gravity = False
         disable_motors = False
 
@@ -71,7 +73,7 @@ class MiniCheetahRefRunnerCfg(MiniCheetahRunnerCfg):
     runner_class_name = "OnPolicyRunner"
 
     class actor(MiniCheetahRunnerCfg.actor):
-        frequency = 50
+        frequency = 100
         hidden_dims = [256, 256, 128]
         # * can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         layer_norm = [True, True, False]
@@ -79,14 +81,17 @@ class MiniCheetahRefRunnerCfg(MiniCheetahRunnerCfg):
         smooth_exploration = False
         exploration_sample_freq = 16
         obs = [
+            "base_height",
+            "base_lin_vel",
             "base_ang_vel",
             "projected_gravity",
             "commands",
             "dof_pos_obs",
             "dof_vel",
             "phase_obs",
+            "dof_pos_target",
         ]
-        normalize_obs = False
+        normalize_obs = True
 
         actions = ["dof_pos_target"]
         disable_actions = False
@@ -138,9 +143,9 @@ class MiniCheetahRefRunnerCfg(MiniCheetahRunnerCfg):
                 dof_pos_limits = 0.0
                 feet_contact_forces = 0.0
                 dof_near_home = 0.0
-                reference_traj = 3.0
-                swing_grf = 1.5
-                stance_grf = 1.5
+                reference_traj = 0.5
+                swing_grf = 0.5
+                stance_grf = 0.5
 
             class termination_weight:
                 termination = 0.15
@@ -150,11 +155,11 @@ class MiniCheetahRefRunnerCfg(MiniCheetahRunnerCfg):
         gamma = 0.99
         lam = 0.95
         # shared
-        batch_size = 2 * 4096  # use all the data
+        batch_size = 4096  # use all the data
         max_gradient_steps = 50
 
         clip_param = 0.2
-        learning_rate = 1.0e-3
+        learning_rate = 1.0e-4
         max_grad_norm = 1.0
         # Critic
         use_clipped_value_loss = True
@@ -168,5 +173,5 @@ class MiniCheetahRefRunnerCfg(MiniCheetahRunnerCfg):
     class runner(MiniCheetahRunnerCfg.runner):
         run_name = ""
         experiment_name = "mini_cheetah_ref"
-        max_iterations = 500  # number of policy updates
+        max_iterations = 1000  # number of policy updates
         algorithm_class_name = "PPO2"

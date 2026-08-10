@@ -7,11 +7,6 @@ from learning.utils import Logger
 from .BaseRunner import BaseRunner
 from learning.storage import DictStorage
 
-from learning.utils.logger.SaveStates import (
-    save_to_log_buffers,
-    save_histogram_from_env,
-)
-
 logger = Logger()
 storage = DictStorage()
 
@@ -19,7 +14,7 @@ storage = DictStorage()
 class OnPolicyRunner(BaseRunner):
     def __init__(self, env, train_cfg, device="cpu"):
         super().__init__(env, train_cfg, device)
-        self.num_steps_per_env = max(1, self.alg_cfg["batch_size"] // env.num_envs)
+        self.num_steps_per_env = max(1, self.alg_cfg["rollout_size"] // env.num_envs)
         print(
             f"[OnPolicyRunner] num_steps_per_env={self.num_steps_per_env}"
             f" (batch_size={self.alg_cfg['batch_size']}, num_envs={env.num_envs})"
@@ -138,15 +133,9 @@ class OnPolicyRunner(BaseRunner):
             logger.toc("runtime")
             logger.print_to_terminal()
 
-            if self.env.cfg.plotting.plot_state_histograms:
-                save_to_log_buffers(self.env, self.env.cfg.plotting.states_to_log)
-
             if self.it % self.save_interval == 0:
                 self.save()
         self.save()
-
-        if self.env.cfg.plotting.plot_state_histograms:
-            save_histogram_from_env(self.env, self.env.cfg.plotting.states_to_log)
 
     @torch.no_grad
     def burn_in_normalization(self, n_iterations=100):
@@ -201,7 +190,11 @@ class OnPolicyRunner(BaseRunner):
         if dt is None:
             dt = self.env.dt
         logger.initialize(
-            self.env.num_envs, dt, self.cfg["max_iterations"], self.device
+            self.env.num_envs,
+            dt,
+            self.cfg["max_iterations"],
+            self.device,
+            log_dir=self.log_dir,
         )
 
         logger.register_rewards(list(self.critic_cfg["reward"]["weights"].keys()))
@@ -248,7 +241,10 @@ class OnPolicyRunner(BaseRunner):
         self.alg.critic.eval()
 
     def get_inference_actions(self):
-        obs = self.get_noisy_obs(self.actor_cfg["obs"], self.actor_cfg["noise"])
+        # Inference is deterministic: observation noise is a training-time
+        # augmentation, and device-specific RNG streams otherwise make the
+        # same checkpoint take different actions on CPU and GPU.
+        obs = self.get_obs(self.actor_cfg["obs"])
         return self.alg.actor.act_inference(obs)
 
     def export(self, path):

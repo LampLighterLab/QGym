@@ -37,71 +37,14 @@ class LeggedRobotCfg(BaseConfig):
     class env:
         num_envs = 4096
         num_actuators = 12
-        env_spacing = 3.0  # not used with heightfields/trimeshes
+        env_spacing = 3.0
         episode_length_s = 20  # episode length in seconds
 
-        num_projectiles = None
-        projectile_density = 10  # [kg/m^3]
-        projectile_radius = 0.2  # [m]
-        projectile_speed = 25  # [m/s]
-
     class terrain:
-        mesh_type = "plane"  # none, plane, heightfield or trimesh
-        horizontal_scale = 0.1  # [m]
-        vertical_scale = 0.005  # [m]
-        border_size = 25  # [m]
-        curriculum = False
+        mesh_type = "plane"  # supported values: None, "plane"
         static_friction = 1.0
         dynamic_friction = 1.0
         restitution = 0.0
-        # * rough terrain only:
-        measure_heights = True
-        # * 1mx1.6m rectangle (without center line)
-        measured_points_x = [
-            -0.8,
-            -0.7,
-            -0.6,
-            -0.5,
-            -0.4,
-            -0.3,
-            -0.2,
-            -0.1,
-            0.0,
-            0.1,
-            0.2,
-            0.3,
-            0.4,
-            0.5,
-            0.6,
-            0.7,
-            0.8,
-        ]
-        measured_points_y = [
-            -0.5,
-            -0.4,
-            -0.3,
-            -0.2,
-            -0.1,
-            0.0,
-            0.1,
-            0.2,
-            0.3,
-            0.4,
-            0.5,
-        ]
-        selected = False  # select a unique terrain type and pass all arguments
-        terrain_kwargs = None  # Dict of arguments for selected terrain
-        max_init_terrain_level = 5  # starting curriculum state
-        terrain_length = 8.0
-        terrain_width = 8.0
-        num_rows = 10  # number of terrain rows (levels)
-        num_cols = 20  # number of terrain cols (types)
-        # * terrain types:
-        # * [smooth slope, rough slope, stairs up, stairs down, discrete]
-        terrain_proportions = [0.1, 0.1, 0.35, 0.25, 0.2]
-        # * trimesh only:
-        slope_treshold = 0.75
-        # * slopes above this threshold will be corrected to vertical surfaces
 
     class commands:
         resampling_time = 10.0  # time before command are changed[s]
@@ -169,36 +112,9 @@ class LeggedRobotCfg(BaseConfig):
         end_effector_names = []
         disable_gravity = False
         disable_motors = False
-        # * merge bodies connected by fixed joints.
-        # * Specific fixed joints can be kept by adding
-        # * " <... dont_collapse="true">
-        collapse_fixed_joints = True
-        # * fix the base of the robot
         fix_base_link = False
-        # * see GymDofDriveModeFlags
-        # * (0 is none, 1 is pos tgt, 2 is vel tgt, 3 effort)
-        default_dof_drive_mode = 3
-        self_collisions = 0  # 1 to disable, 0 to enable...bitwise filter
-        replace_cylinder_with_capsule = True
-        # * Some .obj meshes must be flipped from y-up to z-up
-        flip_visual_attachments = True
-        average_inertia_tensor_if_unphysical = True
-
-        density = 0.001
-        angular_damping = 0.0
-        linear_damping = 0.0
-        max_angular_velocity = 1000.0
-        max_linear_velocity = 1000.0
-        armature = 0.0
-        thickness = 0.01
         rotor_inertia = 0.0
         joint_damping = 0.0
-
-    class domain_rand:
-        randomize_friction = False
-        friction_range = [0.5, 1.25]
-        randomize_base_mass = False
-        added_mass_range = [-1.0, 1.0]  # added to each link!
 
     class reward_settings:
         # * tracking reward = exp(-error^2/sigma)
@@ -224,7 +140,11 @@ class LeggedRobotCfg(BaseConfig):
         ref_env = 0
         pos = [10, 0, 6]  # [m]
         lookat = [11.0, 5, 3.0]  # [m]
-        record = False
+        # MuJoCo passive viewer only: its side panels bind most letters to
+        # visualisation toggles, which collide with keyboard teleop (see
+        # gym/utils/interfaces/teleop_bindings.py).  Off by default;
+        # scripts/play.py --viewer_ui turns them back on.
+        show_ui = False
 
     class mjmodel_settings:
         njmax = 90
@@ -279,7 +199,6 @@ class LeggedRobotRunnerCfg(BaseConfig):
             lin_vel = 0.1
             ang_vel = 0.2
             projected_gravity = 0.05
-            height_measurements = 0.1
 
     class critic:
         hidden_dims = [512, 256, 128]

@@ -1,21 +1,24 @@
 [project]
 name = "q2"
 version = "0.1.0"
-requires-python = "==3.12.*"
+requires-python = "==3.11.*"
 dependencies = [
     "mujoco>=3.6",
     "torch",
     "tensordict",
     "numpy",
-    "pygame",
-    "mss",
     "wandb",
     "pandas",
     "matplotlib",
+    "marimo>=0.23.16",
 ]
 
 [project.optional-dependencies]
 gpu = ["mujoco-warp>=3.6"]
+# vsim backend: closed-source engine, local wheel from ../vlearn (cp311 only —
+# repo is pinned to 3.11 for this). Install with: uv sync --extra vsim
+# Requires system libczmq4 and a valid node-locked license (see README there).
+vsim = ["vlearn"]
 
 [dependency-groups]
 dev = [
@@ -23,18 +26,36 @@ dev = [
     "pytest",
     "ruff>=0.15.9",
     "mujoco-warp>=3.6",
+    "marimo>=0.9",
 ]
+
+[tool.uv.sources]
+# Vendored in-repo (gitignored — see thirdparty/vlearn/README.md for the drop-in
+# procedure on a new machine).
+vlearn = { path = "thirdparty/vlearn/vlearn-0.3.12-cp311-cp311-linux_x86_64.whl" }
 
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["gym", "gym.envs", "gym.envs.base", "gym.envs.mini_cheetah",
-            "gym.envs.mit_humanoid", "gym.utils",
-            "learning", "learning.algorithms", "learning.modules",
-            "learning.runners", "learning.storage", "learning.utils",
-            "learning.utils.logger", "scripts", "go2_deploy"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gym*", "learning*", "go2_deploy*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+# pythonpath: the console-script `pytest` does NOT put the CWD on sys.path
+# (unlike `python -m pytest`), and the test tree imports absolutely
+# (`from tests.unit_tests...`) — without this, bare `pytest` can't load conftest.
+pythonpath = ["."]
+testpaths = ["tests/unit_tests"]
+# The default gate is deterministic and portable: pure tests plus MuJoCo CPU.
+# Hardware-specific tests are selected explicitly with `-m warp` or `-m vsim`.
+addopts = ["--strict-markers", "-m", "not warp and not vsim"]
+markers = [
+    "warp: requires MuJoCo Warp on CUDA",
+    "vsim: requires the licensed VSim backend on CUDA",
+]
 
 [tool.ruff]
 exclude = [
@@ -61,6 +82,8 @@ exclude = [
     "venv",
     "__init__.py",
     "logs/",
+    "notebooks/",
+    "thirdparty/vlearn/",
 ]
 
 line-length = 88

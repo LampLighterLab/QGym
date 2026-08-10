@@ -133,15 +133,9 @@ class MITHumanoidCfg(LeggedRobotCfg):
         max_push_vel_xy = 0.5
         push_box_dims = [0.1, 0.1, 0.3]  # x,y,z [m]
 
-    class domain_rand:
-        randomize_friction = True
-        friction_range = [0.5, 1.25]
-        randomize_base_mass = True
-        added_mass_range = [-1.0, 1.0]
-
     class asset(LeggedRobotCfg.asset):
         file = (
-            "{LEGGED_GYM_ROOT_DIR}/resources/robots/"
+            "{GYM_ROOT_DIR}/resources/robots/"
             + "mit_humanoid/urdf/humanoid_F_sf_learnt.urdf"
         )
         # foot_collisionbox_names = ["foot"]
@@ -149,12 +143,6 @@ class MITHumanoidCfg(LeggedRobotCfg):
         penalize_contacts_on = ["arm"]
         terminate_after_contacts_on = ["base"]
         end_effector_names = ["hand", "foot"]  # ??
-        flip_visual_attachments = False
-        self_collisions = 0  # 1 to disagble, 0 to enable...bitwise filter
-        collapse_fixed_joints = False
-        # * see GymDofDriveModeFlags
-        # * (0 is none, 1 is pos tgt, 2 is vel tgt, 3 effort)
-        default_dof_drive_mode = 3
         fix_base_link = False
         disable_gravity = False
         disable_motors = False

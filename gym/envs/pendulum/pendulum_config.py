@@ -32,7 +32,7 @@ class PendulumCfg(FixedRobotCfg):
         dof_vel_range = {"theta": [-5, 5]}
 
     class control(FixedRobotCfg.control):
-        actuated_joints_mask = [1]  # angle
+        actuated_joint_names = ["theta"]
         ctrl_frequency = 25
         desired_sim_frequency = 200
         stiffness = {"theta": 0.0}  # [N*m/rad]
@@ -40,7 +40,7 @@ class PendulumCfg(FixedRobotCfg):
 
     class asset(FixedRobotCfg.asset):
         # * Things that differ
-        file = "{LEGGED_GYM_ROOT_DIR}/resources/robots/" + "pendulum/urdf/pendulum.urdf"
+        file = "{GYM_ROOT_DIR}/resources/robots/" + "pendulum/urdf/pendulum.urdf"
         disable_gravity = False
         disable_motors = False  # all torques set to 0
         joint_damping = 0.1

@@ -1,4 +1,6 @@
 class DeployConfig:
+    task_name = "go2trot"
+
     ctrl_freq = 500  # Hz
 
     kp = 30.0  # Stiffness constant

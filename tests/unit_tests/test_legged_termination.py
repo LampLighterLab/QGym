@@ -13,11 +13,9 @@ from gym.utils.task_registry import task_registry
 
 
 def _build_env(device: str):
-    pytest.importorskip("mujoco")
     if device.startswith("cuda"):
-        pytest.importorskip("mujoco_warp")
         if not torch.cuda.is_available():
-            pytest.skip("CUDA not available")
+            pytest.fail("Warp tests requested but CUDA is not available", pytrace=False)
 
     import gym.envs  # noqa: F401  — registers tasks
 
@@ -28,9 +26,7 @@ def _build_env(device: str):
     train_cfg.seed = 0
     task_registry.convert_frequencies_to_params(env_cfg, train_cfg)
 
-    return task_registry.make_env_mujoco(
-        "mini_cheetah", env_cfg, device=device, headless=True
-    )
+    return task_registry.make_env("mini_cheetah", env_cfg, device=device, headless=True)
 
 
 def _run_drop_and_detect(env) -> bool:
@@ -67,10 +63,8 @@ def test_termination_on_base_contact_cpu():
     )
 
 
+@pytest.mark.warp
 def test_termination_on_base_contact_warp():
-    pytest.importorskip("mujoco_warp")
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
     env = _build_env(device="cuda:0")
     assert _run_drop_and_detect(env), (
         "base never registered contact force after upside-down fall — "

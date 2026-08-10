@@ -12,8 +12,10 @@ import numpy as np
 import torch
 import mujoco
 
-from gym import LEGGED_GYM_ROOT_DIR
+from gym import GYM_ROOT_DIR
+from gym.envs.base.robot_layout import RobotLayout
 from gym.envs.base.sim_backend import SimBackend
+from gym.envs.base.urdf_limits import parse_urdf_limits
 
 # Quaternion convention helpers: MuJoCo [w,x,y,z] ↔ task-layer [x,y,z,w]
 WXYZ_TO_XYZW = [1, 2, 3, 0]
@@ -36,7 +38,14 @@ class MuJocoBackendBase(SimBackend):
         self._num_bodies: int = 0
         self._dof_names: list = []
         self._body_names: list = []
-
+        self._native_dof_names: list = []
+        self._native_body_names: list = []
+        self._canonical_to_native_dof: torch.Tensor = None
+        self._native_to_canonical_dof: torch.Tensor = None
+        self._canonical_to_native_body: torch.Tensor = None
+        self._canonical_to_native_dof_np: np.ndarray = None
+        self._native_to_canonical_dof_np: np.ndarray = None
+        self._canonical_to_native_body_np: np.ndarray = None
         # Floating-base offsets (0 for fixed-base)
         self._has_free_joint: bool = False
         self._qpos_offset: int = 0
@@ -87,7 +96,7 @@ class MuJocoBackendBase(SimBackend):
 
     def _load_model(self, cfg) -> mujoco.MjModel:
         """Load URDF, configure model (free joint, ground, physics), return MjModel."""
-        asset_path = cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+        asset_path = cfg.asset.file.format(GYM_ROOT_DIR=GYM_ROOT_DIR)
         # Cache URDF effort/velocity limits — MuJoCo drops these on import
         # (it expects them on actuators, but we have none).
         self._urdf_limits = self._parse_urdf_limits(asset_path)
@@ -95,7 +104,10 @@ class MuJocoBackendBase(SimBackend):
         spec.compiler.balanceinertia = cfg.asset.average_inertia_tensor_if_unphysical
         spec.compiler.fusestatic = cfg.asset.collapse_fixed_joints
 
-        # Add free joint for floating-base robots+
+        # Disable fusing links connected with rigid joints
+        spec.compiler.fusestatic = False
+
+        # Add free joint for floating-base robots
         if not getattr(cfg.asset, "fix_base_link", True):
             root_body = spec.worldbody.first_body()
             freejoint = root_body.add_freejoint()
@@ -127,6 +139,7 @@ class MuJocoBackendBase(SimBackend):
 
         # Checker ground plane only when terrain config requests one
         terrain_cfg = getattr(cfg, "terrain", None)
+        terrain_sliding_friction = None
         if (
             terrain_cfg is not None
             and getattr(terrain_cfg, "mesh_type", None) == "plane"
@@ -153,11 +166,52 @@ class MuJocoBackendBase(SimBackend):
             ground.type = mujoco.mjtGeom.mjGEOM_PLANE
             ground.size = [0, 0, 0.05]
             ground.material = "groundplane"
-            sf = getattr(terrain_cfg, "static_friction", 1.0)
-            df = getattr(terrain_cfg, "dynamic_friction", 1.0)
-            ground.friction = [sf, df, 0.0001]
+            # MuJoCo has one Coulomb coefficient for both sticking and
+            # sliding; its three slots are sliding, torsional, and rolling
+            # friction, not static, dynamic, and rolling. Use the configured
+            # dynamic coefficient for the shared sliding coefficient. The
+            # task configs normally keep static and dynamic friction equal.
+            terrain_sliding_friction = getattr(
+                terrain_cfg,
+                "dynamic_friction",
+                getattr(terrain_cfg, "static_friction", 1.0),
+            )
+            ground.friction = [terrain_sliding_friction, 0.005, 0.0001]
+
+        # Check for manually set mjModel attributes
+        if hasattr(cfg, "mjspec_attributes"):
+            for name in dir(cfg.mjspec_attributes):
+                if not name.startswith("_"):
+                    setattr(spec, name, getattr(cfg.mjspec_attributes, name))
+
+        if hasattr(cfg, "mjspec_option_attributes"):
+            for name in dir(cfg.mjspec_option_attributes):
+                if not name.startswith("_"):
+                    setattr(
+                        spec.option, name, getattr(cfg.mjspec_option_attributes, name)
+                    )
+
+        # Check for manually set mjModel attributes
+        if hasattr(cfg, "mjspec_attributes"):
+            for name in dir(cfg.mjspec_attributes):
+                if not name.startswith("_"):
+                    setattr(spec, name, getattr(cfg.mjspec_attributes, name))
+
+        if hasattr(cfg, "mjspec_option_attributes"):
+            for name in dir(cfg.mjspec_option_attributes):
+                if not name.startswith("_"):
+                    setattr(
+                        spec.option, name, getattr(cfg.mjspec_option_attributes, name)
+                    )
 
         mjm = spec.compile()
+        if terrain_sliding_friction is not None:
+            # MuJoCo combines same-priority geom friction using the larger
+            # coefficient. URDF-imported robot geoms otherwise retain the
+            # default sliding coefficient of 1.0 and silently override a
+            # lower terrain value. Give robot and ground the same explicit
+            # material semantics, matching the VSim backend.
+            mjm.geom_friction[:] = [terrain_sliding_friction, 0.005, 0.0001]
 
         # Physics parameters from cfg
         sim_dt = getattr(cfg, "sim_dt", None)
@@ -191,33 +245,98 @@ class MuJocoBackendBase(SimBackend):
             self._qvel_offset = 0
             self._num_dof = mjm.nv
 
-        # Apply damping/armature to actuated DOFs only
-        mjm.dof_damping[self._qvel_offset :] = cfg.asset.joint_damping
-        mjm.dof_armature[self._qvel_offset :] = getattr(cfg.asset, "rotor_inertia", 0.0)
-
         # Contacts: disable for fixed-base (no ground), keep for floating-base
         if not self._has_free_joint:
             mjm.geom_contype[:] = 0
             mjm.geom_conaffinity[:] = 0
 
-        # Extract metadata
-        self._body_names = [
+        # Extract native metadata, then build the stable task-facing layout.
+        self._native_body_names = [
             mujoco.mj_id2name(mjm, mujoco.mjtObj.mjOBJ_BODY, i) or f"body_{i}"
             for i in range(mjm.nbody)
         ]
-        self._num_bodies = mjm.nbody
 
         jnt_start = 1 if self._has_free_joint else 0
-        self._dof_names = [
+        self._native_dof_names = [
             mujoco.mj_id2name(mjm, mujoco.mjtObj.mjOBJ_JOINT, i) or f"joint_{i}"
             for i in range(jnt_start, mjm.njnt)
         ]
+        scalar_joint_types = {
+            mujoco.mjtJoint.mjJNT_HINGE,
+            mujoco.mjtJoint.mjJNT_SLIDE,
+        }
+        robot_joint_types = set(mjm.jnt_type[jnt_start:].tolist())
+        if (
+            len(self._native_dof_names) != self._num_dof
+            or not robot_joint_types <= scalar_joint_types
+        ):
+            raise ValueError(
+                "only scalar hinge/slide robot joints are currently supported: "
+                f"{len(self._native_dof_names)} joints for {self._num_dof} DOFs, "
+                f"joint types={sorted(robot_joint_types)}"
+            )
+
+        self._robot_layout = RobotLayout.from_cfg(cfg)
+        world_name = self._native_body_names[0]
+        self._robot_layout.validate_native(
+            self._native_dof_names,
+            self._native_body_names,
+            allowed_extra_body_names=[world_name],
+        )
+        self._dof_names = list(self._robot_layout.dof_names)
+        self._body_names = list(self._robot_layout.body_names)
+        self._num_dof = len(self._dof_names)
+        self._num_bodies = len(self._body_names)
+
+        canonical_to_native_dof = self._robot_layout.canonical_to_native_dof(
+            self._native_dof_names
+        )
+        native_to_canonical_dof = self._robot_layout.native_to_canonical_dof(
+            self._native_dof_names
+        )
+        canonical_to_native_body = self._robot_layout.canonical_to_native_body(
+            self._native_body_names
+        )
+        self._canonical_to_native_dof_np = np.asarray(
+            canonical_to_native_dof, dtype=np.int64
+        )
+        self._native_to_canonical_dof_np = np.asarray(
+            native_to_canonical_dof, dtype=np.int64
+        )
+        self._canonical_to_native_body_np = np.asarray(
+            canonical_to_native_body, dtype=np.int64
+        )
+        self._canonical_to_native_dof = torch.tensor(
+            canonical_to_native_dof, dtype=torch.long, device=device
+        )
+        self._native_to_canonical_dof = torch.tensor(
+            native_to_canonical_dof, dtype=torch.long, device=device
+        )
+        self._canonical_to_native_body = torch.tensor(
+            canonical_to_native_body, dtype=torch.long, device=device
+        )
+
+        # Config vectors are canonical; MuJoCo model arrays are native.
+        damping = getattr(cfg.asset, "joint_damping", 0.0)
+        armature = getattr(cfg.asset, "rotor_inertia", 0.0)
+        if np.ndim(damping) == 0:
+            mjm.dof_damping[self._qvel_offset :] = damping
+        else:
+            mjm.dof_damping[self._qvel_offset :] = np.asarray(damping)[
+                self._native_to_canonical_dof_np
+            ]
+        if np.ndim(armature) == 0:
+            mjm.dof_armature[self._qvel_offset :] = armature
+        else:
+            mjm.dof_armature[self._qvel_offset :] = np.asarray(armature)[
+                self._native_to_canonical_dof_np
+            ]
 
         # Contact index tensors
-        self._penalised_contact_indices = self._build_contact_indices(
+        self._penalised_contact_indices = self.build_contact_indices(
             getattr(cfg.asset, "penalize_contacts_on", []), device
         )
-        self._termination_contact_indices = self._build_contact_indices(
+        self._termination_contact_indices = self.build_contact_indices(
             getattr(cfg.asset, "terminate_after_contacts_on", []), device
         )
 
@@ -232,18 +351,10 @@ class MuJocoBackendBase(SimBackend):
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
-    def _build_contact_indices(self, name_patterns: list, device: str) -> torch.Tensor:
-        indices = []
-        for pattern in name_patterns:
-            for i, bname in enumerate(self._body_names):
-                if pattern in bname:
-                    indices.append(i)
-        return torch.tensor(indices, dtype=torch.long, device=device)
-
     def _make_dof_props(self, mjm: mujoco.MjModel) -> dict:
         """Build DOF-properties dict expected by task._process_dof_props.
 
-        Keys match the IsaacGym interface: lower, upper, velocity, effort.
+        Keys match the task callback contract: lower, upper, velocity, effort.
         Only includes actuated joints (skips free joint for floating-base).
         Effort/velocity come from <limit> tags parsed out of the URDF —
         MuJoCo's URDF importer discards those because it expects them on
@@ -252,15 +363,20 @@ class MuJocoBackendBase(SimBackend):
         jnt_start = 1 if self._has_free_joint else 0
         n = mjm.njnt - jnt_start
         limited = mjm.jnt_limited[jnt_start : mjm.njnt].astype(bool)
-        lower = np.where(limited, mjm.jnt_range[jnt_start : mjm.njnt, 0], -1e6)
-        upper = np.where(limited, mjm.jnt_range[jnt_start : mjm.njnt, 1], 1e6)
-        effort = np.full(n, 1e6, dtype=np.float64)
-        velocity = np.full(n, 1e6, dtype=np.float64)
-        for i, jname in enumerate(self._dof_names):
+        lower_native = np.where(limited, mjm.jnt_range[jnt_start : mjm.njnt, 0], -1e6)
+        upper_native = np.where(limited, mjm.jnt_range[jnt_start : mjm.njnt, 1], 1e6)
+        effort_native = np.full(n, 1e6, dtype=np.float64)
+        velocity_native = np.full(n, 1e6, dtype=np.float64)
+        for i, jname in enumerate(self._native_dof_names):
             if jname in self._urdf_limits:
                 eff, vel = self._urdf_limits[jname]
-                effort[i] = eff
-                velocity[i] = vel
+                effort_native[i] = eff
+                velocity_native[i] = vel
+        order = self._canonical_to_native_dof_np
+        lower = lower_native[order]
+        upper = upper_native[order]
+        effort = effort_native[order]
+        velocity = velocity_native[order]
         return {"lower": lower, "upper": upper, "velocity": velocity, "effort": effort}
 
     @staticmethod
@@ -298,21 +414,5 @@ class MuJocoBackendBase(SimBackend):
 
     @staticmethod
     def _parse_urdf_limits(urdf_path: str) -> dict:
-        """Read <joint><limit effort=... velocity=.../></joint> from URDF.
-
-        Returns {joint_name: (effort, velocity)}.  Joints without a <limit>
-        tag or without both attributes are absent — caller decides default.
-        """
-        out: dict = {}
-        root = ET.parse(urdf_path).getroot()
-        for joint in root.findall("joint"):
-            name = joint.get("name")
-            limit = joint.find("limit")
-            if name is None or limit is None:
-                continue
-            eff = limit.get("effort")
-            vel = limit.get("velocity")
-            if eff is None or vel is None:
-                continue
-            out[name] = (float(eff), float(vel))
-        return out
+        """Shared implementation lives in gym.envs.base.urdf_limits."""
+        return parse_urdf_limits(urdf_path)
