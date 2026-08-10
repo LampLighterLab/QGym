@@ -1,6 +1,7 @@
 from enum import Enum, auto
 import time
 import threading
+import math
 
 from rl_controller import RLController
 from unitree_remote_controller import UnitreeRemoteController
@@ -16,6 +17,7 @@ from unitree_sdk2py.core.channel import (
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import (
     LowCmd_,
     LowState_,
+    SportModeState_,
 )
 from unitree_sdk2py.go2.sport.sport_client import SportClient
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
@@ -56,7 +58,15 @@ class MainController:
         for obs in self.cfg.obs_vector:
             self.obs_vec_size += self.cfg.obs_sizes[obs]
 
-        # Last observation vector (extracted from LowState_ msg)
+        # Last sportmodestate msg
+        self.last_sportmodestate_msg = None
+        self.last_sportmodestate_msg_lock = threading.Lock()
+
+        # Last lowstate msg
+        self.last_lowstate_msg = None
+        self.last_lowstate_msg_lock = threading.Lock()
+
+        # Last computed observation vector
         self.last_obs = torch.zeros(self.obs_vec_size)
         self.last_obs_lock = threading.Lock()
 
@@ -69,18 +79,25 @@ class MainController:
         self.last_command_lock = threading.Lock()
 
         # Log obs freq / control freq about once per second
-        self.last_terminal_output_time = 0.0
-        self.obs_count = 0
+        self.last_terminal_output_time = time.monotonic()
+        self.lowstate_obs_count = 0
+        self.sportmodestate_obs_count = 0
         self.action_count = 0
 
-        # Unitree SDK pub/sub
+        # Threads
         self._create_lowcmd_thread()
         self.emergency_lowcmd_thread = None
+        self.watchdog_thead = RecurrentThread(interval=0.01, target=self._watchdog_loop)
 
+        # Unitree SDK pub/sub
         self.lowcmd_publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
         self.lowcmd_publisher.Init()
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self.lowstate_subscriber.Init(self._on_lowstate_msg, 10)
+        self.sportmodestate_subscriber = ChannelSubscriber(
+            "rt/sportmodestate", SportModeState_
+        )
+        self.sportmodestate_subscriber.Init(self._on_sportmodestate_msg, 10)
         self.motion_switcher_client = MotionSwitcherClient()
         self.motion_switcher_client.SetTimeout(10.0)
         self.motion_switcher_client.Init()
@@ -88,31 +105,48 @@ class MainController:
         self.sport_client.SetTimeout(10.0)
         self.sport_client.Init()
 
+        # Unitree messaging utilities
         self.crc = CRC()
         self.default_lowcmd = deploy_utility.default_lowcmd()
         self.emergency_lowcmd = deploy_utility.emergency_lowcmd()
+        self.kp_mult = 1.0
+
+        if self.cfg.task_name == "go2trot":
+            self.phase_frequency = self.cfg.phase_frequency
+            self.phase = 0.0
 
     # Process incoming states and outgoing commands
-
     def action_to_lowcmd(self, action):
         return deploy_utility.action_to_lowcmd(self, action)
 
-    def lowstate_to_obs(self, lowstate_msg):
-        return deploy_utility.lowstate_to_obs(self, lowstate_msg)
+    def msg_to_obs(self, lowstate_msg, sportmodestate_msg):
+        return deploy_utility.lowstate_to_obs(self, lowstate_msg, sportmodestate_msg)
 
-    # Record LowState_ msg as observation vector
+    # Save last lowstate msg
     def _on_lowstate_msg(self, msg):
-        with self.last_obs_lock:
-            self.last_obs = self.lowstate_to_obs(msg)
+        with self.last_lowstate_msg_lock:
+            self.last_lowstate_msg = msg
+        self.lowstate_obs_count += 1
 
-        t = time.monotonic()
-        self.obs_count += 1
-        if t > self.last_terminal_output_time + 1.0:
-            self._output_terminal_info(t)
+    # Save last sportmodestate_msg
+    def _on_sportmodestate_msg(self, msg):
+        with self.last_sportmodestate_msg_lock:
+            self.last_sportmodestate_msg = msg
+        self.lowstate_obs_count += 1
 
-    # Process most recent obs and publish LowCmd_ msg
+    # Process most recent msgs and publish LowCmd_ msg
     def _control_loop(self):
-        with self.last_obs_lock:
+        if self.cfg.task_name == "go2trot":
+            self.phase = time.monotonic % (1.0 / self.phase_frequency) * 2 * math.pi
+
+        with (
+            self.last_lowstate_msg_lock,
+            self.last_sportmodestate_msg_lock,
+            self.last_obs_lock,
+        ):
+            self.last_obs = self.msg_to_obs(
+                self.last_lowstate_msg, self.last_sportmodestate_msg
+            )
             action = self._act()
         lowcmd = self.action_to_lowcmd(self.last_action)
         with self.last_action_lock:
@@ -121,10 +155,7 @@ class MainController:
         lowcmd.crc = self.crc.Crc(lowcmd)
         self.lowcmd_publisher.Write(lowcmd)
 
-        t = time.monotonic()
         self.action_count += 1
-        if t > self.last_terminal_output_time + 1.0:
-            self._output_terminal_info(t)
 
     def _act(self):
         # act using lowcmd thread
@@ -159,12 +190,11 @@ class MainController:
         self._create_lowcmd_thread()
         self.switch_to_recovery()
 
-    # Check if robot is in unsafe condition, emergency stop if necessary
-    def termination_check(self, lowstate_msg):
-        terminate = False
-        if terminate:
-            self.emergency_stop()
-        return
+    # Check that threads are alive, unsafe conditions
+    def _watchdog_loop(self):
+        t = time.monotonic()
+        if t > self.last_terminal_output_time + 1.0:
+            self._output_terminal_info(t)
 
     # publish LowCmd_ damping messages
     def _emergency_control_loop(self):
@@ -209,7 +239,7 @@ class MainController:
             print("Failed to switch to low state mode, trying again in 5s")
             time.sleep(5)
             mode = self.motion_switcher_client.CheckMode()[1]["name"]
-
+        self.kp_mult = 0.2
         self.lowcmd_thread.Start()
 
     def switch_to_default_controller(self):
@@ -234,8 +264,11 @@ class MainController:
 
     def _output_terminal_info(self, current_time):
         print(
-            "\nObservation freq = "
-            + f"{self.obs_count / (current_time - self.last_terminal_output_time):.5}"
+            "\nlowstate obs freq = "
+            + f"{self.lowstate_obs_count / (current_time - self.last_terminal_output_time):.5}"  # noqa: E501
+            + " Hz, "
+            + "sportmodestate obs freq = "
+            + f"{self.sportmodestate_obs_count_obs_count / (current_time - self.last_terminal_output_time):.5}"  # noqa: E501
             + " Hz, "
             + "custom policy control freq = "
             + f"{self.action_count / (current_time - self.last_terminal_output_time):.5}"  # noqa: E501
@@ -252,6 +285,9 @@ class MainController:
         print(
             "d: default controller (high level control with the wireless controller)\n"
         )
-        self.last_terminal_output_time = time.monotonic()
-        self.obs_count = 0
+        print("i: increase kp by 10%")
+        print("k: decrease kp by 10%")
         self.action_count = 0
+        self.lowstate_obs_count = 0
+        self.sportmodestate_obs_count = 0
+        self.last_terminal_output_time = current_time

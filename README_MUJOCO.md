@@ -341,7 +341,7 @@ tensor:
 
 ```python
 left_leg = layout.dof_group_indices("left_leg")  # (0, 1, 2)
-feet = layout.body_group_indices("feet")         # (3, 6)
+feet = layout.body_group_indices("feet")  # (3, 6)
 
 left_leg_position = dof_pos[:, left_leg]
 foot_forces = contact_forces[:, feet, :]

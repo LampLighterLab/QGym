@@ -19,5 +19,12 @@ class KeyboardHandler:
             self.controller.switch_to_custom_controller()
         elif key == "d":
             self.controller.switch_to_default_controller
+        elif key == "i":
+            self.controller.kp_mult += 0.1
+            print(f"kp increased to {self.controller.kp_mult * self.controller.cfg.kp}")
+        elif key == "k":
+            if self.controller.kp_mult >= 0.1:
+                self.controller.kp_mult -= 0.1
+            print(f"kp decreased to {self.controller.kp_mult * self.controller.cfg.kp}")
         else:
             print("Invalid keyboard input!")

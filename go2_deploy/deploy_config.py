@@ -1,20 +1,32 @@
+from gym.envs.go2.go2trot_config import Go2TrotCfg
+
+
 class DeployConfig:
     task_name = "go2trot"
 
-    ctrl_freq = 500  # Hz
+    ctrl_freq = 100  # Hz
 
-    kp = 30.0  # Stiffness constant
+    kp = 20.0  # Stiffness constant
     kd = 2.0  # Damping constant
+
+    phase_frequency = 2.0  # for go2trot env
 
     # Observation vector used to train robot
     obs_vector = [
+        "base_lin_vel",
         "base_ang_vel",
         "projected_gravity",
         "commands",
         "dof_pos_obs",
         "dof_vel",
         "dof_pos_target",
+        "phase_obs",
+        "phase_frequency",
     ]  # add later? foot contact
+
+    # Scale observations
+    class DeployScaling(Go2TrotCfg.scaling):
+        pass
 
     # Set ranges of joystick commands
     command_limits = {
@@ -32,6 +44,9 @@ class DeployConfig:
         "dof_vel": 12,
         "dof_accel": 12,
         "dof_pos_target": 12,
+        "base_lin_vel": 3,
+        "phase_obs": 2,
+        "phase_frequency": 1,
     }
 
     # Check for unsafe config
