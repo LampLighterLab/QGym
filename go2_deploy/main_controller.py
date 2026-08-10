@@ -126,13 +126,22 @@ class MainController:
     def _on_lowstate_msg(self, msg):
         with self.last_lowstate_msg_lock:
             self.last_lowstate_msg = msg
+            self.remote_controller.parse(msg.wireless_remote)
+        with self.last_command_lock:
+            self.last_command = torch.tensor(
+                [
+                    self.remote_controller.lin_vel_x,
+                    self.remote_controller.lin_vel_y,
+                    self.remote_controller.yaw_vel,
+                ]
+            )
         self.lowstate_obs_count += 1
 
     # Save last sportmodestate_msg
     def _on_sportmodestate_msg(self, msg):
         with self.last_sportmodestate_msg_lock:
             self.last_sportmodestate_msg = msg
-        self.lowstate_obs_count += 1
+        self.sportmodestate_obs_count += 1
 
     # Process most recent msgs and publish LowCmd_ msg
     def _control_loop(self):
