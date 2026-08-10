@@ -55,6 +55,12 @@ class MuJocoBackendBase(SimBackend):
         self._penalised_contact_indices: torch.Tensor = None
         self._termination_contact_indices: torch.Tensor = None
 
+        # Domain-parameter source of truth.  The CPU backend activates these
+        # values on its shared model per environment; Warp overrides them with
+        # per-world native views.
+        self._contact_friction_t: torch.Tensor = None
+        self._nominal_contact_friction: float = 1.0
+
     # ── SimBackend.device ─────────────────────────────────────────────────────
 
     @property
@@ -177,6 +183,9 @@ class MuJocoBackendBase(SimBackend):
             )
             ground.friction = [terrain_sliding_friction, 0.005, 0.0001]
 
+        if terrain_sliding_friction is not None:
+            self._nominal_contact_friction = float(terrain_sliding_friction)
+
         # Check for manually set mjModel attributes
         if hasattr(cfg, "mjspec_attributes"):
             for name in dir(cfg.mjspec_attributes):
@@ -224,6 +233,15 @@ class MuJocoBackendBase(SimBackend):
             mjm.opt.gravity[:] = 0.0
 
         return mjm
+
+    @staticmethod
+    def _set_model_contact_friction(model: mujoco.MjModel, coefficient: float) -> None:
+        """Set one portable sliding coefficient without changing other slots."""
+        model.geom_friction[:, 0] = coefficient
+        if model.npair:
+            # Explicit pair friction has two tangential directions followed by
+            # torsional and rolling slots; it overrides geom mixing.
+            model.pair_friction[:, 0:2] = coefficient
 
     def _configure_model(self, mjm: mujoco.MjModel, cfg, device: str) -> None:
         """Detect floating-base, set damping/contacts, extract metadata."""

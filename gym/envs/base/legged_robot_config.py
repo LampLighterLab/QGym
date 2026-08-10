@@ -60,6 +60,11 @@ class LeggedRobotCfg(BaseConfig):
         max_push_vel_xy = 0.05
         push_box_dims = [0.2, 0.2, 0.2]  # x,y,z [m]
 
+    class domain_randomization:
+        # Sampled independently for resetting environments at episode reset.
+        # None disables the parameter.
+        contact_friction_range = None
+
     class init_state:
         # * target state when action = 0, also reset positions for basic mode
         default_joint_angles = {"joint_a": 0.0, "joint_b": 0.0}

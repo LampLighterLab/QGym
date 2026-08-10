@@ -19,6 +19,7 @@ in-place updates (SimBackend contract: all tensors live after step() returns).
 
 import torch
 
+from gym.envs.base.domain_randomization import contact_friction_range
 from gym.envs.base.mujoco_backend_base import (
     MuJocoBackendBase,
     WXYZ_TO_XYZW,
@@ -48,6 +49,9 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._dof_pos_view: torch.Tensor = None
         self._dof_vel_view: torch.Tensor = None
         self._contact_forces_t: torch.Tensor = None
+        self._geom_friction_t: torch.Tensor = None
+        self._pair_friction_t: torch.Tensor = None
+        self._randomize_contact_friction = False
 
     # ── State tensors ──────────────────────────────────────────────────────────
 
@@ -122,6 +126,31 @@ class MuJocoWarpBackend(MuJocoBackendBase):
     def contact_forces(self) -> torch.Tensor:
         return self._contact_forces_t
 
+    @property
+    def contact_friction(self) -> torch.Tensor:
+        return self._contact_friction_t
+
+    def set_contact_friction(
+        self,
+        env_ids: torch.Tensor,
+        coefficients: torch.Tensor,
+        *,
+        validate: bool = True,
+    ) -> None:
+        ids, values = self._prepare_contact_friction_update(
+            env_ids, coefficients, self._num_envs, validate
+        )
+        if ids.numel() == 0:
+            return
+        if not self._randomize_contact_friction:
+            raise RuntimeError(
+                "contact-friction randomization was not enabled before setup"
+            )
+        self._contact_friction_t[ids] = values
+        self._geom_friction_t[ids, :, 0] = values[:, None]
+        if self._pair_friction_t is not None:
+            self._pair_friction_t[ids, :, 0:2] = values[:, None, None]
+
     # ── World building ─────────────────────────────────────────────────────────
 
     def setup(self, cfg, num_envs: int, device: str, task=None) -> None:
@@ -131,6 +160,7 @@ class MuJocoWarpBackend(MuJocoBackendBase):
 
         self._device = device
         self._num_envs = num_envs
+        self._randomize_contact_friction = contact_friction_range(cfg) is not None
 
         wp.init()
         self._wp_ctx = wp.ScopedDevice(device)
@@ -141,7 +171,12 @@ class MuJocoWarpBackend(MuJocoBackendBase):
 
         # Build Warp model and batched data inside the device scope
         with self._wp_ctx:
-            self._m = mjw.put_model(mjm)
+            batch_sizes = None
+            if self._randomize_contact_friction:
+                batch_sizes = {"geom_friction": num_envs}
+                if mjm.npair:
+                    batch_sizes["pair_friction"] = num_envs
+            self._m = mjw.put_model(mjm, batch_sizes=batch_sizes)
             mjd = mujoco.MjData(mjm)
             njmax = mjm.njmax if mjm.njmax > 0 else None
             self._d = mjw.put_data(mjm, mjd, nworld=num_envs, njmax=njmax)
@@ -154,6 +189,10 @@ class MuJocoWarpBackend(MuJocoBackendBase):
             self._xpos_t = wp.to_torch(self._d.xpos)
             self._xquat_t = wp.to_torch(self._d.xquat)
             self._cvel_t = wp.to_torch(self._d.cvel)
+            if self._randomize_contact_friction:
+                self._geom_friction_t = wp.to_torch(self._m.geom_friction)
+                if mjm.npair:
+                    self._pair_friction_t = wp.to_torch(self._m.pair_friction)
 
         # Scratch tensors for assembled state
         self._root_states_t = torch.zeros(num_envs, 13, device=device)
@@ -168,6 +207,9 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._dof_vel_view = self._dof_state_t[..., 1]
         self._contact_forces_t = torch.zeros(
             num_envs, self._num_bodies, 3, device=device
+        )
+        self._contact_friction_t = torch.full(
+            (num_envs,), self._nominal_contact_friction, device=device
         )
 
         # Tensors must be valid immediately after setup() (tasks cache them
