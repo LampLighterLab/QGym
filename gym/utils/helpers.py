@@ -75,9 +75,10 @@ def update_class_from_dict(obj, dict):
     return
 
 
-def set_seed(seed):
+def set_seed(seed) -> int:
     if seed == -1:
         seed = np.random.randint(0, 10000)
+    seed = int(seed)
     print("Setting seed: {}".format(seed))
     random.seed(seed)
     np.random.seed(seed)
@@ -85,6 +86,7 @@ def set_seed(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    return seed
 
 
 def get_load_path(name, load_run=-1, checkpoint=-1):

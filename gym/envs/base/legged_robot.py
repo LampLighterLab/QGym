@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from gym.envs.base.base_task import BaseTask
+from gym.envs.base.domain_randomization import DomainRandomizer
 from gym.utils import random_sample
 from gym.utils.sampling import torch_rand_float
 from gym.utils.helpers import class_to_dict
@@ -20,6 +21,15 @@ class LeggedRobot(BaseTask):
 
         super().__init__(backend, cfg, device, headless)
         self._parse_cfg(self.cfg)
+        # Compile and validate the DR contract before backend setup.  This is
+        # especially important for VSim, whose process-wide singleton should
+        # not be created for an invalid configuration.
+        self.domain_randomizer = DomainRandomizer(
+            self.cfg,
+            self._backend,
+            self.num_envs,
+            self.device,
+        )
         reset_mode = self.cfg.init_state.reset_mode
         self._reset_state = getattr(self, reset_mode, None)
         if not callable(self._reset_state):
@@ -257,6 +267,7 @@ class LeggedRobot(BaseTask):
         Args:
             env_ids (List[int]): Environemnt ids
         """
+        self.domain_randomizer.randomize(env_ids)
         self._reset_state(env_ids)
 
         # * start base position shifted in X-Y plane

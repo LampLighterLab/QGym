@@ -8,6 +8,7 @@ numpy→torch after each step.
 import torch
 import mujoco
 
+from gym.envs.base.domain_randomization import contact_friction_range
 from gym.envs.base.mujoco_backend_base import (
     MuJocoBackendBase,
     WXYZ_TO_XYZW,
@@ -35,6 +36,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self._show_ui = False  # overridden from cfg.viewer.show_ui in setup()
         self._viewer_key_callback = None
         self._viewer_overlay_fn = None  # called each render() before sync()
+        self._randomize_contact_friction = False
 
     # ── State tensors ──────────────────────────────────────────────────────────
 
@@ -62,11 +64,42 @@ class MuJocoCPUBackend(MuJocoBackendBase):
     def contact_forces(self) -> torch.Tensor:
         return self._contact_forces_t
 
+    @property
+    def contact_friction(self) -> torch.Tensor:
+        return self._contact_friction_t
+
+    def set_contact_friction(
+        self,
+        env_ids: torch.Tensor,
+        coefficients: torch.Tensor,
+        *,
+        validate: bool = True,
+    ) -> None:
+        ids, values = self._prepare_contact_friction_update(
+            env_ids, coefficients, self._num_envs, validate
+        )
+        if ids.numel() == 0:
+            return
+        if not self._randomize_contact_friction:
+            raise RuntimeError(
+                "contact-friction randomization was not enabled before setup"
+            )
+        self._contact_friction_t[ids] = values
+
+    def _activate_domain(self, env_id: int) -> None:
+        """Activate one environment's parameters on the shared CPU model."""
+        if not self._randomize_contact_friction:
+            return
+        self._set_model_contact_friction(
+            self._mjm, float(self._contact_friction_t[env_id])
+        )
+
     # ── World building ─────────────────────────────────────────────────────────
 
     def setup(self, cfg, num_envs: int, device: str, task=None) -> None:
         self._device = device
         self._num_envs = num_envs
+        self._randomize_contact_friction = contact_friction_range(cfg) is not None
 
         mjm = self._load_model(cfg)
         self._configure_model(mjm, cfg, device)
@@ -91,6 +124,9 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self._contact_forces_t = torch.zeros(
             num_envs, self._num_bodies, 3, device=device
         )
+        self._contact_friction_t = torch.full(
+            (num_envs,), self._nominal_contact_friction, device=device
+        )
 
     # ── Per-step ───────────────────────────────────────────────────────────────
 
@@ -98,6 +134,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         torques_np = torques.cpu().numpy()[:, self._native_to_canonical_dof_np]
         off = self._qvel_offset
         for i, d in enumerate(self._datas):
+            self._activate_domain(i)
             d.qfrc_applied[off:] = torques_np[i]
             mujoco.mj_step(self._mjm, d)
         self._sync_state_from_mujoco()
@@ -108,6 +145,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         dof_order = self._canonical_to_native_dof_np
         body_order = self._canonical_to_native_body_np
         for i, d in enumerate(self._datas):
+            self._activate_domain(i)
             # cfrc_ext is only populated with constraint/contact forces by
             # mj_rnePostConstraint; mj_step alone leaves it at zero.
             mujoco.mj_rnePostConstraint(self._mjm, d)
@@ -137,6 +175,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         qoff = self._qpos_offset
         voff = self._qvel_offset
         for i in env_ids.tolist():
+            self._activate_domain(i)
             self._datas[i].qpos[qoff:] = (
                 self._dof_pos_view[i].cpu().numpy()[self._native_to_canonical_dof_np]
             )
@@ -149,6 +188,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         if not self._has_free_joint:
             return
         for i in env_ids.tolist():
+            self._activate_domain(i)
             rs = self._root_states_t[i].cpu()
             self._datas[i].qpos[:3] = rs[:3].numpy()
             self._datas[i].qpos[3:7] = rs[3:7][XYZW_TO_WXYZ].numpy()
@@ -165,6 +205,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         import platform
         import mujoco.viewer
 
+        self._activate_domain(0)
         if self._viewer is None:
             if platform.system() == "Darwin":
                 import mujoco.viewer as _mjv

@@ -12,10 +12,10 @@ The supported world is currently a flat ground plane. Periodic `push_robots`
 disturbances remain part of legged-task behavior. Heightfields, trimeshes, and
 projectiles are outside the current scope.
 
-Domain randomization is intentionally deferred. It will return as a new
-backend-neutral feature with one sampling contract and explicit effects in the
-MuJoCo and VSim engine families. Do not reintroduce engine-specific friction or
-mass callbacks in the meantime.
+Domain randomization is returning as a new backend-neutral feature. The first
+milestone—independent episode-level contact friction—is implemented for
+MuJoCo CPU, MuJoCo Warp, and VSim. `DR.md` defines the semantics, evidence, and
+remaining progression. Do not reintroduce legacy engine-specific callbacks.
 
 ## Architecture
 
@@ -207,25 +207,23 @@ Pruning is complete when every selectable runner and algorithm has a declared
 consumer and evidence, every registered learning task uses a supported chain,
 and the package no longer exports unreachable implementations.
 
-## Planned domain randomization
+## Domain randomization progression
 
-Add domain randomization later as a standalone feature, in this order:
-
-1. Define a backend-neutral configuration and sampling API, including seed and
-   per-environment reset semantics.
-2. Start with friction and body-mass perturbations. State exactly which model
-   quantities change and whether changes require engine rebuild, model copies,
-   or runtime buffers.
-3. Implement MuJoCo CPU first with deterministic sampling and narrow tests.
-4. Implement the same observable contract for MuJoCo Warp and VSim without
-   silently dropping unsupported axes.
-5. Add distribution, reset-isolation, reproducibility, and backend-consumption
-   tests before robustness training.
+1. **Complete:** backend-neutral seeded sampling and independent episode-reset
+   contact friction. Native routing, partial-reset isolation, full-task flow,
+   and a predicted sliding threshold have been exercised on all three backend
+   paths.
+2. Add backend-neutral stiffness and damping scaling from stored nominal gains.
+3. Add physically consistent link mass and inertia scaling, including derived
+   engine constants and body-weight-dependent reward normalization.
+4. Add measured delay, bias, and noise axes only with explicit schedules.
+5. Keep motor-strength scaling low priority; if added, apply it to final torque
+   rather than treating PD gain uncertainty as equivalent.
 6. Compare nominal and randomized policies with identical rollout and
-   evaluation geometry.
+   evaluation geometry after each axis.
 
-Until that work starts, keep training physics deterministic apart from
-task-level initial-state, command, and `push_robots` sampling.
+See `DR.md` for detailed semantics, backend topology, test gates, and the
+literature survey.
 
 ## Common commands
 

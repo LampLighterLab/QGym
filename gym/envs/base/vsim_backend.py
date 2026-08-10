@@ -30,6 +30,7 @@ import xml.etree.ElementTree as ET
 
 import torch
 
+from gym.envs.base.domain_randomization import contact_friction_range
 from gym.envs.base.robot_layout import RobotLayout
 from gym.envs.base.sim_backend import SimBackend
 from gym.envs.base.urdf_limits import parse_urdf_limits
@@ -96,6 +97,10 @@ class VSimBackend(SimBackend):
         self._render_initialized = False
         self._render_hooks = []  # each called with the render, per frame
         self._window_closed = False
+        self._randomize_contact_friction = False
+        self._contact_material_h = None
+        self._contact_friction_t = None
+        self._nominal_contact_friction = 1.0
 
     # ── Metadata ──────────────────────────────────────────────────────────
 
@@ -156,6 +161,33 @@ class VSimBackend(SimBackend):
     def contact_forces(self) -> torch.Tensor:
         return self._contact_forces_t
 
+    @property
+    def contact_friction(self) -> torch.Tensor:
+        return self._contact_friction_t
+
+    def set_contact_friction(
+        self,
+        env_ids: torch.Tensor,
+        coefficients: torch.Tensor,
+        *,
+        validate: bool = True,
+    ) -> None:
+        ids, values = self._prepare_contact_friction_update(
+            env_ids, coefficients, self._num_envs, validate
+        )
+        if ids.numel() == 0:
+            return
+        if not self._randomize_contact_friction:
+            raise RuntimeError(
+                "contact-friction randomization was not enabled before setup"
+            )
+        self._contact_friction_t[ids] = values
+        self._static_friction[ids] = values
+        self._dynamic_friction[ids] = values
+        self._property_mask.zero_()
+        self._property_mask[ids] = True
+        self._gym.set_rigid_material_properties(self._friction_set_arr)
+
     @staticmethod
     def _set_contact_offsets(model_def, knobs) -> None:
         contact_offset = getattr(knobs, "contact_offset", None)
@@ -193,11 +225,16 @@ class VSimBackend(SimBackend):
     def setup(self, cfg, num_envs: int, device: str, task=None) -> None:
         if not device.startswith("cuda"):
             raise RuntimeError(f"VSimBackend is CUDA-only, got device={device!r}")
+        self._randomize_contact_friction = contact_friction_range(cfg) is not None
         import vlearn as v
 
         self._v = v
         self._device = device
         self._num_envs = num_envs
+        terrain = getattr(cfg, "terrain", None)
+        self._nominal_contact_friction = float(
+            getattr(terrain, "dynamic_friction", 1.0)
+        )
         headless = task.headless if task is not None else True
 
         # Self-heal the engine's cache structure (vsim::Path::findCachePath
@@ -256,6 +293,7 @@ class VSimBackend(SimBackend):
         contact_material = self._create_contact_material(
             env_def, art_def_h, art_def, cfg
         )
+        self._contact_material_h = contact_material
         art_def.enable_control_type(v.ArticulationControlType.MOTOR, True)
         for i in range(art_def.get_num_force_sensor_defs()):
             art_def.get_force_sensor_def(i).max_num_transform_handles = 8
@@ -267,7 +305,6 @@ class VSimBackend(SimBackend):
             art_def_h, v.Transform(v.Quat(*rot), v.Vec3(*pos))
         )
 
-        terrain = getattr(cfg, "terrain", None)
         has_plane = (
             terrain is not None and getattr(terrain, "mesh_type", None) == "plane"
         )
@@ -290,7 +327,10 @@ class VSimBackend(SimBackend):
             )
 
         env_def.finalize()
-        self._grp = self._gym.create_environment_group(env_def_h, [num_envs])
+        environment_set_sizes = (
+            [1] * num_envs if self._randomize_contact_friction else [num_envs]
+        )
+        self._grp = self._gym.create_environment_group(env_def_h, environment_set_sizes)
         # Articulation instance (sensor handles live on it, valid post-group)
         self._art_instance = env_def.get_articulation(self._art_h)
 
@@ -404,6 +444,34 @@ class VSimBackend(SimBackend):
         self._rigid_body_states_t = torch.zeros(N, L, 13, device=dev)
         self._rigid_body_states_t[:, :, 6] = 1.0
         self._contact_forces_t = torch.zeros(N, L, 3, device=dev)
+        self._contact_friction_t = torch.full(
+            (N,), self._nominal_contact_friction, device=dev
+        )
+
+        if self._randomize_contact_friction:
+            if self._contact_material_h is None:
+                raise RuntimeError(
+                    "contact-friction randomization requires a VSim rigid material"
+                )
+            # Material-property masks select environment sets.  Setup uses one
+            # environment per set whenever this axis is enabled, so set and
+            # flattened environment indices coincide.
+            self._property_mask = torch.zeros(N, dtype=torch.bool, device=dev)
+            self._static_friction = self._contact_friction_t.clone()
+            self._dynamic_friction = self._contact_friction_t.clone()
+            static_cmd = grp.create_rigid_material_property_command(
+                v.RigidMaterialProperty.STATIC_FRICTION,
+                v.wrap_gpu_buffer(self._static_friction),
+                self._contact_material_h,
+                masks_buffer=v.wrap_gpu_buffer(self._property_mask),
+            )
+            dynamic_cmd = grp.create_rigid_material_property_command(
+                v.RigidMaterialProperty.DYNAMIC_FRICTION,
+                v.wrap_gpu_buffer(self._dynamic_friction),
+                self._contact_material_h,
+                masks_buffer=v.wrap_gpu_buffer(self._property_mask),
+            )
+            self._friction_set_arr = gym.create_gpu_array([static_cmd, dynamic_cmd])
 
         # GET command buffers (contiguous; wrap_gpu_buffer rejects views)
         self._jp_get = torch.zeros(N, nd, device=dev)

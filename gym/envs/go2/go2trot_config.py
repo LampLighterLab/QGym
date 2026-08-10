@@ -131,11 +131,8 @@ class Go2TrotCfg(LeggedRobotCfg):
         max_push_vel_xy = 0.5
         push_box_dims = [0.3, 0.1, 0.1]  # x,y,z [m]
 
-    class domain_rand:
-        randomize_friction = True
-        friction_range = [0.5, 1.0]
-        randomize_base_mass = False
-        added_mass_range = [-1.0, 1.0]
+    class domain_randomization(LeggedRobotCfg.domain_randomization):
+        contact_friction_range = [0.5, 1.0]
 
     class asset(LeggedRobotCfg.asset):
         file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
