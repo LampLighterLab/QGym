@@ -169,7 +169,6 @@ class MainController:
     # Safety features
 
     def emergency_stop(self):
-        self._state = State.EMERGENCY_STOP
         if self.lowcmd_thread.IsAlive():
             while not self.lowcmd_thread.Wait():
                 print(
@@ -177,6 +176,8 @@ class MainController:
                     + "press L2+B to manually stop. Trying again in 2s\n"
                 )
                 time.sleep(2)
+
+        self._state = State.EMERGENCY_STOP
 
         self.emergency_lowcmd_thread = RecurrentThread(
             interval=0.01, target=self._emergency_control_loop
@@ -204,7 +205,6 @@ class MainController:
 
     def switch_to_recovery(self):
         print("Switching to recovery state")
-        self._state = State.RECOVERY
 
         if self.lowcmd_thread.IsAlive():
             while not self.lowcmd_thread.Wait():
@@ -214,6 +214,8 @@ class MainController:
                 )
                 time.sleep(1)
             self._create_lowcmd_thread()
+
+        self._state = State.RECOVERY
 
         self.motion_switcher_client.SelectMode("mcf")
         mode = self.motion_switcher_client.CheckMode()[1]["name"]
