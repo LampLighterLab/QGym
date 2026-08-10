@@ -197,7 +197,6 @@ class Go2TrotRunnerCfg(LeggedRobotRunnerCfg):
         # * can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         activation = "elu"
         obs = [
-            "base_lin_vel",
             "base_ang_vel",
             "projected_gravity",
             "commands",

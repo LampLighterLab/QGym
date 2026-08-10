@@ -7,6 +7,7 @@ from rl_controller import RLController
 from unitree_remote_controller import UnitreeRemoteController
 from deploy_config import DeployConfig
 from go2_deploy.utility import deploy_utility
+from go2_deploy.utility.csv_logger import CSVLogger
 from go2_deploy.utility.thread import RecurrentThread
 
 import torch
@@ -46,6 +47,8 @@ class State(Enum):
     # Can be accessed from any other state
     RECOVERY = auto()
 
+    INTERMEDIATE = auto()
+
 
 class MainController:
     def __init__(self):
@@ -53,6 +56,10 @@ class MainController:
         self.rl_controller = RLController()
         self.remote_controller = UnitreeRemoteController()
         self.cfg = DeployConfig()
+
+        # CSV logging (constructed before the subscribers so no callback can
+        # fire against a missing logger)
+        self.csv_logger = CSVLogger(self)
 
         self.obs_vec_size = 0
         for obs in self.cfg.obs_vector:
@@ -78,16 +85,15 @@ class MainController:
         self.last_command = torch.zeros(3)
         self.last_command_lock = threading.Lock()
 
-        # Log obs freq / control freq about once per second
+        # Log obs freq / control freq every 5 seconds
         self.last_terminal_output_time = time.monotonic()
         self.lowstate_obs_count = 0
         self.sportmodestate_obs_count = 0
         self.action_count = 0
 
-        # Threads
-        self._create_lowcmd_thread()
-        self.emergency_lowcmd_thread = None
-        self.watchdog_thead = RecurrentThread(interval=0.01, target=self._watchdog_loop)
+        if self.cfg.task_name == "go2trot":
+            self.phase_frequency = self.cfg.phase_frequency
+            self.phase = 0.0
 
         # Unitree SDK pub/sub
         self.lowcmd_publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
@@ -111,19 +117,26 @@ class MainController:
         self.emergency_lowcmd = deploy_utility.emergency_lowcmd()
         self.kp_mult = 1.0
 
-        if self.cfg.task_name == "go2trot":
-            self.phase_frequency = self.cfg.phase_frequency
-            self.phase = 0.0
+        # Threads
+        self._create_lowcmd_thread()
+        self.emergency_lowcmd_thread = None
+        self.watchdog_thread = RecurrentThread(
+            interval=0.01, target=self._watchdog_loop
+        )
+        self.watchdog_thread.Start()
+
+        self.switch_to_recovery()
 
     # Process incoming states and outgoing commands
     def action_to_lowcmd(self, action):
-        return deploy_utility.action_to_lowcmd(self, action)
+        return deploy_utility.action_to_lowcmd(self, action, kp_mult=self.kp_mult)
 
-    def msg_to_obs(self, lowstate_msg, sportmodestate_msg):
-        return deploy_utility.lowstate_to_obs(self, lowstate_msg, sportmodestate_msg)
+    def msg_to_obs(self, lowstate_msg):
+        return deploy_utility.lowstate_to_obs(self, lowstate_msg)
 
     # Save last lowstate msg
     def _on_lowstate_msg(self, msg):
+        t = time.monotonic()
         with self.last_lowstate_msg_lock:
             self.last_lowstate_msg = msg
             self.remote_controller.parse(msg.wireless_remote)
@@ -135,27 +148,29 @@ class MainController:
                     self.remote_controller.yaw_vel,
                 ]
             )
+        self.csv_logger.log_lowstate(t, msg, self.remote_controller)
         self.lowstate_obs_count += 1
 
     # Save last sportmodestate_msg
     def _on_sportmodestate_msg(self, msg):
+        t = time.monotonic()
         with self.last_sportmodestate_msg_lock:
             self.last_sportmodestate_msg = msg
+        self.csv_logger.log_sportmodestate(t, msg)
         self.sportmodestate_obs_count += 1
 
     # Process most recent msgs and publish LowCmd_ msg
     def _control_loop(self):
+        t = time.monotonic()
         if self.cfg.task_name == "go2trot":
-            self.phase = time.monotonic % (1.0 / self.phase_frequency) * 2 * math.pi
+            self.phase = t % (1.0 / self.phase_frequency) * 2 * math.pi
 
         with (
             self.last_lowstate_msg_lock,
             self.last_sportmodestate_msg_lock,
             self.last_obs_lock,
         ):
-            self.last_obs = self.msg_to_obs(
-                self.last_lowstate_msg, self.last_sportmodestate_msg
-            )
+            self.last_obs = self.msg_to_obs(self.last_lowstate_msg)
             action = self._act()
         lowcmd = self.action_to_lowcmd(self.last_action)
         with self.last_action_lock:
@@ -164,12 +179,23 @@ class MainController:
         lowcmd.crc = self.crc.Crc(lowcmd)
         self.lowcmd_publisher.Write(lowcmd)
 
+        # lowcmd carries the previous tick's action, action is this tick's fresh
+        # policy output -- both are logged rather than conflated
+        self.csv_logger.log_control(t, self.last_obs, action, lowcmd)
+
         self.action_count += 1
 
     def _act(self):
         # act using lowcmd thread
         if self._state == State.CUSTOM_CTRL:
-            return self.rl_controller.act(self.last_obs)
+            actor_output = self.rl_controller.act(self.last_obs)
+            return torch.clip(
+                actor_output,
+                min=self.cfg.lower_joint_limit,
+                max=self.cfg.upper_joint_limit,
+            )
+        elif self._state == State.INTERMEDIATE:
+            return self.default_pos
         else:
             print("Should not be using RL controller! This should not happen")
             self.emergency_stop()
@@ -178,6 +204,9 @@ class MainController:
     # Safety features
 
     def emergency_stop(self):
+        if self._state == State.EMERGENCY_STOP:
+            return
+
         if self.lowcmd_thread.IsAlive():
             while not self.lowcmd_thread.Wait():
                 print(
@@ -203,7 +232,7 @@ class MainController:
     # Check that threads are alive, unsafe conditions
     def _watchdog_loop(self):
         t = time.monotonic()
-        if t > self.last_terminal_output_time + 1.0:
+        if t > self.last_terminal_output_time + 5.0:
             self._output_terminal_info(t)
 
     # publish LowCmd_ damping messages
@@ -231,15 +260,33 @@ class MainController:
         while mode != "mcf":
             print("Failed to switch to sport mode, trying again in 5s")
             time.sleep(5)
+            self.motion_switcher_client.SelectMode("mcf")
             mode = self.motion_switcher_client.CheckMode()[1]["name"]
 
         self.sport_client.RecoveryStand()
         time.sleep(10)
         print("Recovered")
 
+    def switch_to_intermediate(self):
+        self.default_pos = torch.tensor(
+            deploy_utility._get_obs_dof_pos_obs(self, self.last_lowstate_msg)
+        )
+        print(self.default_pos)
+        self._state = State.INTERMEDIATE
+        print("Switching to intermediate")
+        self.motion_switcher_client.ReleaseMode()
+        mode = self.motion_switcher_client.CheckMode()[1]["name"]
+        while mode != "":
+            print("Failed to switch to low state mode, trying again in 5s")
+            time.sleep(5)
+            self.motion_switcher_client.ReleaseMode()
+            mode = self.motion_switcher_client.CheckMode()[1]["name"]
+
+        self.lowcmd_thread.Start()
+
     def switch_to_custom_controller(self):
-        if self._state != State.RECOVERY:
-            print("Must be in recovery state to switch to a custom controller!")
+        if self._state != State.INTERMEDIATE:
+            print("Must be in intermediate state to switch to a custom controller!")
             return
 
         print("Switching to custom controller")
@@ -249,8 +296,9 @@ class MainController:
         while mode != "":
             print("Failed to switch to low state mode, trying again in 5s")
             time.sleep(5)
+            self.motion_switcher_client.ReleaseMode()
             mode = self.motion_switcher_client.CheckMode()[1]["name"]
-        self.kp_mult = 0.2
+
         self.lowcmd_thread.Start()
 
     def switch_to_default_controller(self):
@@ -260,10 +308,12 @@ class MainController:
 
         print("Switching to default controller")
         self._state = State.DEFAULT_CTRL
+        self.motion_switcher_client.SelectMode("mcf")
         mode = self.motion_switcher_client.CheckMode()[1]["name"]
         while mode != "mcf":
             print("Failed to switch to sport mode, trying again in 5s")
             time.sleep(5)
+            self.motion_switcher_client.SelectMode("mcf")
             mode = self.motion_switcher_client.CheckMode()[1]["name"]
 
     # Utility
@@ -279,13 +329,17 @@ class MainController:
             + f"{self.lowstate_obs_count / (current_time - self.last_terminal_output_time):.5}"  # noqa: E501
             + " Hz, "
             + "sportmodestate obs freq = "
-            + f"{self.sportmodestate_obs_count_obs_count / (current_time - self.last_terminal_output_time):.5}"  # noqa: E501
+            + f"{self.sportmodestate_obs_count / (current_time - self.last_terminal_output_time):.5}"  # noqa: E501
             + " Hz, "
             + "custom policy control freq = "
             + f"{self.action_count / (current_time - self.last_terminal_output_time):.5}"  # noqa: E501
             + " Hz"
         )
         print("Current mode: " + self._state.name)
+        print(
+            f"Logging to {self.csv_logger.run_dir} "
+            + f"({self.csv_logger.dropped_rows} rows dropped)"
+        )
         print("\nTo switch modes: enter in terminal <key> and press enter")
         print(
             "(enter key pressed without input): emergency stop "

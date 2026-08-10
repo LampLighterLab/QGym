@@ -5,22 +5,22 @@ from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 from unitree_sdk2py.utils.crc import CRC
 
 
-def _get_obs_base_ang_vel(main_controller, lowstate_msg, sportmodestate_msg):
+def _get_obs_base_ang_vel(main_controller, lowstate_msg):
     return torch.tensor(lowstate_msg.imu_state.gyroscope)
 
 
-def _get_obs_projected_gravity(main_controller, lowstate_msg, sportmodestate_msg):
+def _get_obs_projected_gravity(main_controller, lowstate_msg):
     # Convert Unitree WXYZ to QGym XYZW
     base_quat = torch.tensor(lowstate_msg.imu_state.quaternion)[[1, 2, 3, 0]]
     gravity_vec = torch.tensor([0.0, 0.0, -1.0])
     return quat_rotate_inverse(base_quat, gravity_vec)
 
 
-def _get_obs_commands(main_controller, lowstate_msg, sportmodestate_msg):
+def _get_obs_commands(main_controller, lowstate_msg):
     return main_controller.last_command
 
 
-def _get_obs_dof_pos_obs(main_controller, lowstate_msg, sportmodestate_msg):
+def _get_obs_dof_pos_obs(main_controller, lowstate_msg):
     motor_states = lowstate_msg.motor_state
     # Unitree motor order: Front Right hip (haa), FR thigh (hfe), FR calf (kfe),
     # Front Left ... Rear Right ... Rear Left
@@ -32,7 +32,7 @@ def _get_obs_dof_pos_obs(main_controller, lowstate_msg, sportmodestate_msg):
     return dof_pos_unitree_convention[unitree_to_qgym_joint_idx]
 
 
-def _get_obs_dof_vel(main_controller, lowstate_msg, sportmodestate_msg):
+def _get_obs_dof_vel(main_controller, lowstate_msg):
     motor_states = lowstate_msg.motor_state
     dof_vel_unitree_convention = torch.zeros(12)
     for i in range(12):
@@ -41,7 +41,7 @@ def _get_obs_dof_vel(main_controller, lowstate_msg, sportmodestate_msg):
     return dof_vel_unitree_convention[unitree_to_qgym_joint_idx]
 
 
-def _get_obs_dof_accel(main_controller, lowstate_msg, sportmodestate_msg):
+def _get_obs_dof_accel(main_controller, lowstate_msg):
     motor_states = lowstate_msg.motor_state
     dof_accel_unitree_convention = torch.zeros(12)
     for i in range(12):
@@ -50,26 +50,21 @@ def _get_obs_dof_accel(main_controller, lowstate_msg, sportmodestate_msg):
     return dof_accel_unitree_convention[unitree_to_qgym_joint_idx]
 
 
-def _get_obs_dof_pos_target(main_controller, lowstate_msg, sportmodestate_msg):
+def _get_obs_dof_pos_target(main_controller, lowstate_msg):
     return main_controller.last_action
 
 
-def _get_obs_base_lin_vel(main_controller, lowstate_msg, sportmodestate_msg):
-    return torch.tensor(sportmodestate_msg.velocity)
-
-
 def _get_obs_phase_obs(main_controller, lowstate_msg):
-    return torch.tensor(
-        [torch.sin(main_controller.phase), torch.cos(main_controller.phase)]
-    )
+    phase = torch.tensor([main_controller.phase])
+    return torch.tensor([torch.sin(phase), torch.cos(phase)])
 
 
-def _get_obs_phase_frequency(main_controller, lowstate_msg, sportmodestate_msg):
+def _get_obs_phase_frequency(main_controller, lowstate_msg):
     return torch.tensor([DeployConfig.phase_frequency])
 
 
 # Assemble observation vector (torch tensor) from LowState_ msg
-def lowstate_to_obs(main_controller, lowstate_msg, sportmodestate_msg):
+def lowstate_to_obs(main_controller, lowstate_msg):
     get_obs_piece = {
         "base_ang_vel": _get_obs_base_ang_vel,
         "projected_gravity": _get_obs_projected_gravity,
@@ -78,7 +73,6 @@ def lowstate_to_obs(main_controller, lowstate_msg, sportmodestate_msg):
         "dof_vel": _get_obs_dof_vel,
         "dof_accel": _get_obs_dof_accel,
         "dof_pos_target": _get_obs_dof_pos_target,
-        "base_lin_vel": _get_obs_base_lin_vel,
         "phase_obs": _get_obs_phase_obs,
         "phase_frequency": _get_obs_phase_frequency,
     }
@@ -89,8 +83,7 @@ def lowstate_to_obs(main_controller, lowstate_msg, sportmodestate_msg):
         obs_size = main_controller.cfg.obs_sizes[obs]
         scale = torch.tensor(getattr(main_controller.cfg.DeployScaling, obs, 1.0))
         obs_vector[i : i + obs_size] = (
-            get_obs_piece[obs](main_controller, lowstate_msg, sportmodestate_msg)
-            / scale
+            get_obs_piece[obs](main_controller, lowstate_msg) / scale
         )
         i += obs_size
 

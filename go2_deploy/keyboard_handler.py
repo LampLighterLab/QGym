@@ -15,10 +15,12 @@ class KeyboardHandler:
             self.controller.emergency_stop()
         elif key == "r":
             self.controller.switch_to_recovery()
+        elif key == "q":
+            self.controller.switch_to_intermediate()
         elif key == "c":
             self.controller.switch_to_custom_controller()
         elif key == "d":
-            self.controller.switch_to_default_controller
+            self.controller.switch_to_default_controller()
         elif key == "i":
             self.controller.kp_mult += 0.1
             print(f"kp increased to {self.controller.kp_mult * self.controller.cfg.kp}")

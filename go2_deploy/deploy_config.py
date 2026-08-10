@@ -1,4 +1,5 @@
 from gym.envs.go2.go2trot_config import Go2TrotCfg
+import torch
 
 
 class DeployConfig:
@@ -6,14 +7,13 @@ class DeployConfig:
 
     ctrl_freq = 100  # Hz
 
-    kp = 20.0  # Stiffness constant
+    kp = 3.0  # Stiffness constant
     kd = 2.0  # Damping constant
 
     phase_frequency = 2.0  # for go2trot env
 
     # Observation vector used to train robot
     obs_vector = [
-        "base_lin_vel",
         "base_ang_vel",
         "projected_gravity",
         "commands",
@@ -44,10 +44,12 @@ class DeployConfig:
         "dof_vel": 12,
         "dof_accel": 12,
         "dof_pos_target": 12,
-        "base_lin_vel": 3,
         "phase_obs": 2,
         "phase_frequency": 1,
     }
+
+    lower_joint_limit = torch.tensor(4 * [-0.83, -3.49, -2.72])
+    upper_joint_limit = torch.tensor(4 * [0.83, 1.57, -0.83])
 
     # Check for unsafe config
     def __init__(self):
