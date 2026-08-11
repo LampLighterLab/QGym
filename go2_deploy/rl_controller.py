@@ -1,12 +1,13 @@
 from gym.utils.task_registry import task_registry
 from gym.utils.helpers import set_seed
 import gym.envs  # noqa: F401
-from go2_deploy.deploy_config import DeployConfig
+from deploy_config import DeployConfig
 
 import random
+import torch
 
 
-# Helper function to load actor network from logs/go2/run_name (default: most recent)
+# Returns Actor constructed from logs/go2/run_name (default: most recent)
 def setup_actor(run_name=None):
     deploy_cfg = DeployConfig()
     env_cfg, train_cfg = task_registry.get_cfgs(name=deploy_cfg.task_name)
@@ -46,6 +47,10 @@ def setup_actor(run_name=None):
 class RLController:
     def __init__(self):
         self.actor = setup_actor()
+        self.cfg = DeployConfig()
 
-    def act(self, obs):
-        return self.actor.act_inference(obs)
+    # Returns torch.tensor(12): actor outputs in radians which is the
+    # target pos subtracted from default_pos + reference traj (when applicable)
+    def act(self, obs_vector):
+        scale = torch.tensor(getattr(self.cfg.DeployScaling, "dof_pos_target", 1.0))
+        return self.actor.act_inference(obs_vector) * scale

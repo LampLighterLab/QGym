@@ -115,6 +115,8 @@ class LeggedRobotCfg(BaseConfig):
         fix_base_link = False
         rotor_inertia = 0.0
         joint_damping = 0.0
+        average_inertia_tensor_if_unphysical = True
+        collapse_fixed_joints = False
 
     class reward_settings:
         # * tracking reward = exp(-error^2/sigma)
@@ -241,6 +243,7 @@ class LeggedRobotRunnerCfg(BaseConfig):
         clip_param = 0.2
         learning_rate = 1.0e-3
         max_grad_norm = 1.0
+        rollout_size = 2**16
         # Critic
         use_clipped_value_loss = True
         # Actor

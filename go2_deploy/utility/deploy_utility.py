@@ -1,8 +1,17 @@
 import torch
 from deploy_config import DeployConfig
+from go2_deploy.state import State
 from gym.utils.torch_quat import quat_rotate_inverse
 from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 from unitree_sdk2py.utils.crc import CRC
+
+# Unitree motor order: Front Right hip (haa), FR thigh (hfe), FR calf (kfe),
+# Front Left ... Rear Right ... Rear Left
+# QGym motor order: FL hip, FL thigh, FL calf, FR ... RL ... RR
+UNITREE_TO_QGYM_JOINT_IDX = torch.tensor([3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8])
+QGYM_TO_UNITREE_JOINT_IDX = torch.tensor([3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8])
+
+# Compute pieces of the observation vector, returning torch tensors
 
 
 def _get_obs_base_ang_vel(main_controller, lowstate_msg):
@@ -22,14 +31,10 @@ def _get_obs_commands(main_controller, lowstate_msg):
 
 def _get_obs_dof_pos_obs(main_controller, lowstate_msg):
     motor_states = lowstate_msg.motor_state
-    # Unitree motor order: Front Right hip (haa), FR thigh (hfe), FR calf (kfe),
-    # Front Left ... Rear Right ... Rear Left
     dof_pos_unitree_convention = torch.zeros(12)
     for i in range(12):
         dof_pos_unitree_convention[i] = motor_states[i].q
-    # QGym motor order: FL hip, FL thigh, FL calf, FR ... RL ... RR
-    unitree_to_qgym_joint_idx = torch.tensor([3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8])
-    return dof_pos_unitree_convention[unitree_to_qgym_joint_idx]
+    return dof_pos_unitree_convention[UNITREE_TO_QGYM_JOINT_IDX]
 
 
 def _get_obs_dof_vel(main_controller, lowstate_msg):
@@ -37,8 +42,7 @@ def _get_obs_dof_vel(main_controller, lowstate_msg):
     dof_vel_unitree_convention = torch.zeros(12)
     for i in range(12):
         dof_vel_unitree_convention[i] = motor_states[i].dq
-    unitree_to_qgym_joint_idx = torch.tensor([3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8])
-    return dof_vel_unitree_convention[unitree_to_qgym_joint_idx]
+    return dof_vel_unitree_convention[UNITREE_TO_QGYM_JOINT_IDX]
 
 
 def _get_obs_dof_accel(main_controller, lowstate_msg):
@@ -46,12 +50,15 @@ def _get_obs_dof_accel(main_controller, lowstate_msg):
     dof_accel_unitree_convention = torch.zeros(12)
     for i in range(12):
         dof_accel_unitree_convention[i] = motor_states[i].ddq
-    unitree_to_qgym_joint_idx = torch.tensor([3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8])
-    return dof_accel_unitree_convention[unitree_to_qgym_joint_idx]
+    return dof_accel_unitree_convention[UNITREE_TO_QGYM_JOINT_IDX]
 
 
+# Clipped to actual joint range
 def _get_obs_dof_pos_target(main_controller, lowstate_msg):
-    return main_controller.last_action
+    dof_pos_target_unclipped = main_controller.last_action
+    min_pos = main_controller.cfg.lower_joint_limit
+    max_pos = main_controller.cfg.upper_joint_limit
+    return torch.clip(dof_pos_target_unclipped, min=min_pos, max=max_pos)
 
 
 def _get_obs_phase_obs(main_controller, lowstate_msg):
@@ -63,7 +70,7 @@ def _get_obs_phase_frequency(main_controller, lowstate_msg):
     return torch.tensor([DeployConfig.phase_frequency])
 
 
-# Assemble observation vector (torch tensor) from LowState_ msg
+# Returns torch tensor: observation vector from lowstate_msg
 def lowstate_to_obs(main_controller, lowstate_msg):
     get_obs_piece = {
         "base_ang_vel": _get_obs_base_ang_vel,
@@ -90,16 +97,35 @@ def lowstate_to_obs(main_controller, lowstate_msg):
     return obs_vector
 
 
-# Assemble LowCmd_ msg from action
-def action_to_lowcmd(main_controller, action, kp_mult=1.0):
+# Returns LowCmd_ from the actor output action_qgm_convention, kp_mult
+# Accounts for gait_reference (when applicable) and default_pos
+def action_to_lowcmd(main_controller, action_qgym_convention, kp_mult=1.0):
+    gait_reference = torch.zeros_like(action_qgym_convention)
+    if (
+        main_controller.cfg.task_name == "go2trot"
+        and main_controller._state == State.CUSTOM_CTRL
+    ):
+        gait_reference += main_controller.gait_reference
+
+    default_pos = main_controller.cfg.default_dof_pos
+    target_pos_qgym = gait_reference + default_pos + action_qgym_convention
+    target_pos = target_pos_qgym[QGYM_TO_UNITREE_JOINT_IDX]
+
+    target_pos = torch.clip(
+        target_pos,
+        min=main_controller.cfg.lower_joint_limit,
+        max=main_controller.cfg.upper_joint_limit,
+    )
+
     lowcmd = main_controller.default_lowcmd
     for i in range(12):
-        lowcmd.motor_cmd[i].q = action[i]
+        lowcmd.motor_cmd[i].q = target_pos[i].item()
         lowcmd.motor_cmd[i].kp = main_controller.cfg.kp * kp_mult
 
     return lowcmd
 
 
+# Returns LowCmd_ of q, dq, kp, kd = 0
 def default_lowcmd():
     lowcmd = unitree_go_msg_dds__LowCmd_()
     crc = CRC()
@@ -127,6 +153,7 @@ def default_lowcmd():
     return lowcmd
 
 
+# Returns LowCmd_ of q, dq, kp = 0, kd > 0
 def emergency_lowcmd():
     lowcmd = default_lowcmd()
     crc = CRC()

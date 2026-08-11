@@ -12,7 +12,7 @@ class KeyboardHandler:
     def _process_input(self):
         key = input()
         if key == "":
-            self.controller.emergency_stop()
+            self.controller._estop_flag = True
         elif key == "r":
             self.controller.switch_to_recovery()
         elif key == "q":
