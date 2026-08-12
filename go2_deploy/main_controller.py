@@ -193,6 +193,7 @@ class MainController:
     # Return torch tensor: target joint position (minus default pos, gait traj)
     def _act(self, last_obs):
         if self._state == State.CUSTOM_CTRL:
+            # return torch.zeros(12) (replay gait trajectory only)
             return self.rl_controller.act(last_obs)
         elif self._state == State.INTERMEDIATE:
             return deploy_utility.target_pos_to_action(self, self.intermediate_pos)
