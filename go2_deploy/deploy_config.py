@@ -7,12 +7,15 @@ class DeployConfig:
 
     ctrl_freq = 100  # Hz
 
-    kp = 5.0  # Stiffness constant
+    kp = 30.0  # Stiffness constant
     kd = 2.0  # Damping constant
 
     phase_frequency = 2.0  # for go2trot env
 
-    # Observation vector used to train robot
+    # Apply exponential moving average to actions
+    exp_moving_avg = True
+    ema_smoothing_factor = 0.1
+
     obs_vector = [
         "base_ang_vel",
         "projected_gravity",

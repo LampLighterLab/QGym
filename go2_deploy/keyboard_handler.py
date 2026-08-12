@@ -28,5 +28,12 @@ class KeyboardHandler:
             if self.controller.kp_mult >= 0.1:
                 self.controller.kp_mult -= 0.1
             print(f"kp decreased to {self.controller.kp_mult * self.controller.cfg.kp}")
+        elif key == "l":
+            self.controller.kd_mult += 0.1
+            print(f"kd increased to {self.controller.kd_mult * self.controller.cfg.kd}")
+        elif key == "j":
+            if self.controller.kd_mult >= 0.1:
+                self.controller.kd_mult -= 0.1
+            print(f"kd decreased to {self.controller.kd_mult * self.controller.cfg.kd}")
         else:
             print("Invalid keyboard input!")

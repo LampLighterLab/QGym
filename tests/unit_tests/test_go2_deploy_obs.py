@@ -145,7 +145,7 @@ def test_deploy_obs_matches_env_get_states():
 
         # The two quantities no message carries; the action round-trip is
         # covered separately in test_action_roundtrip.
-        builder.last_action = env.dof_pos_target[0].numpy() / scale
+        builder.last_action[0] = env.dof_pos_target[0].numpy() / scale
         builder.commands = env.commands[0].numpy()
 
         deploy_obs = builder.get_obs(_synth_lowstate(env))

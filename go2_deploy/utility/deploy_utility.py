@@ -54,7 +54,7 @@ def _get_obs_dof_accel(main_controller, lowstate_msg):
 
 # Clipped to actual joint range
 def _get_obs_dof_pos_target(main_controller, lowstate_msg):
-    dof_pos_target_unclipped = main_controller.last_action
+    dof_pos_target_unclipped = main_controller.last_action[0]
     min_pos = main_controller.cfg.lower_joint_limit
     max_pos = main_controller.cfg.upper_joint_limit
     return torch.clip(dof_pos_target_unclipped, min=min_pos, max=max_pos)
@@ -123,7 +123,7 @@ def target_pos_to_action(main_controller, target_pos):
 
 # Returns LowCmd_ from the actor output action_qgm_convention, kp_mult
 # Accounts for gait_reference (when applicable) and default_pos
-def action_to_lowcmd(main_controller, action_qgym_convention, kp_mult=1.0):
+def action_to_lowcmd(main_controller, action_qgym_convention, kp_mult=1.0, kd_mult=1.0):
     target_pos_qgym = action_to_target_pos(main_controller, action_qgym_convention)
     target_pos = target_pos_qgym[QGYM_TO_UNITREE_JOINT_IDX]
 
@@ -137,6 +137,7 @@ def action_to_lowcmd(main_controller, action_qgym_convention, kp_mult=1.0):
     for i in range(12):
         lowcmd.motor_cmd[i].q = target_pos[i].item()
         lowcmd.motor_cmd[i].kp = main_controller.cfg.kp * kp_mult
+        lowcmd.motor_cmd[i].kd = main_controller.cfg.kd * kd_mult
 
     return lowcmd
 

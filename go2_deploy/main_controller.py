@@ -50,6 +50,7 @@ class MainController:
         self.default_lowcmd = deploy_utility.default_lowcmd()
         self.emergency_lowcmd = deploy_utility.emergency_lowcmd()
         self.kp_mult = 1.0
+        self.kd_mult = 1.0
 
         # Threads
         self._create_lowcmd_thread()
@@ -77,9 +78,9 @@ class MainController:
         self.last_obs = torch.zeros(self.obs_vec_size)
         self.last_obs_lock = threading.Lock()
 
-        # torch.tensor(12): Target joint positions in radians
-        # (difference from default_pos + gait_trajectory)
-        self.last_action = torch.zeros(12)
+        # torch.tensor((2, 12)): Last 2 actor outputs (in radians),
+        # already averaged using exp moving avg (if applicable)
+        self.last_action = torch.zeros((2, 12))
         self.last_action_lock = threading.Lock()
 
         # torch.tensor(3): [x_vel, y_vel, yaw_vel]
@@ -123,7 +124,9 @@ class MainController:
 
     # torch.tensor(12) -> LowCmd_
     def action_to_lowcmd(self, action):
-        return deploy_utility.action_to_lowcmd(self, action, kp_mult=self.kp_mult)
+        return deploy_utility.action_to_lowcmd(
+            self, action, kp_mult=self.kp_mult, kd_mult=self.kd_mult
+        )
 
     # LowState_ -> torch tensor
     def msg_to_obs(self, lowstate_msg):
@@ -181,13 +184,21 @@ class MainController:
         action = self._act(last_obs)
 
         with self.last_action_lock:
-            self.last_action = action
-            lowcmd = self.action_to_lowcmd(self.last_action)
+            self.last_action[1] = self.last_action[0]
+            self.last_action[0] = action
+            if self.cfg.exp_moving_avg:
+                alpha = self.cfg.ema_smoothing_factor
+                self.last_action[0] = (alpha * self.last_action[0]) + (
+                    1 - alpha
+                ) * self.last_action[1]
+
+            lowcmd = self.action_to_lowcmd(self.last_action[0])
+            smoothed_action = self.last_action[0].clone().detach()
 
         lowcmd.crc = self.crc.Crc(lowcmd)
         self.lowcmd_publisher.Write(lowcmd)
 
-        self.csv_logger.log_control(t, self.last_obs, action, lowcmd)
+        self.csv_logger.log_control(t, self.last_obs, action, smoothed_action, lowcmd)
         self.action_count += 1
 
     # Return torch tensor: target joint position (minus default pos, gait traj)
@@ -200,7 +211,7 @@ class MainController:
         else:
             print("Should not be using RL controller! This should not happen")
             self._estop_flag = True
-            return self.last_action
+            return self.last_action[0]
 
     # Emergency stop ----------------------------------
 
@@ -347,6 +358,8 @@ class MainController:
         )
         print("i: increase kp by 10%")
         print("k: decrease kp by 10%")
+        print("l: increase kd by 10%")
+        print("j: decrease kd by 10%")
         self.action_count = 0
         self.lowstate_obs_count = 0
         self.sportmodestate_obs_count = 0

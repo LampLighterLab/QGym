@@ -93,6 +93,8 @@ class CSVLogger:
                     "ctrl_freq": cfg.ctrl_freq,
                     "kp": cfg.kp,
                     "kd": cfg.kd,
+                    "exp_moving_avg": cfg.exp_moving_avg,
+                    "ema_smoothing_factor": cfg.ema_smoothing_factor,
                     "obs_vector": list(cfg.obs_vector),
                 },
                 f,
@@ -171,12 +173,17 @@ class CSVLogger:
         )
 
     def _control_header(self):
+        # action_* is the raw actor output for this step; smoothed_action_* is
+        # last_action[0] after the exponential moving average, i.e. what
+        # actually became the lowcmd. The two are equal when
+        # cfg.exp_moving_avg is off.
         return (
             ["t", "state", "phase"]
             + self.obs_columns
             + _numbered("action", 12)
+            + _numbered("smoothed_action", 12)
             + _numbered("lowcmd_q", 12)
-            + ["kp", "kd", "kp_mult"]
+            + ["kp", "kd", "kp_mult", "kd_mult"]
         )
 
     # Producers -- called from the DDS callbacks and the control loop
@@ -232,7 +239,13 @@ class CSVLogger:
         ]
         self._enqueue("sportmodestate", row)
 
-    def log_control(self, t, obs, action, lowcmd):
+    def log_control(self, t, obs, action, smoothed_action, lowcmd):
+        """Log one control step.
+
+        `action` is the raw actor output; `smoothed_action` is last_action[0]
+        after the exponential moving average over the 2x12 action buffer, which
+        is the vector the lowcmd was built from.
+        """
         cfg = self.main_controller.cfg
         row = [
             t,
@@ -242,8 +255,14 @@ class CSVLogger:
         row += obs.tolist() if obs is not None else [""] * len(self.obs_columns)
         # _act() returns None on the emergency path; leave those columns blank
         row += action.tolist() if action is not None else [""] * 12
+        row += smoothed_action.tolist() if smoothed_action is not None else [""] * 12
         row += [lowcmd.motor_cmd[i].q for i in range(12)]
-        row += [cfg.kp, cfg.kd, self.main_controller.kp_mult]
+        row += [
+            cfg.kp,
+            cfg.kd,
+            self.main_controller.kp_mult,
+            self.main_controller.kd_mult,
+        ]
         self._enqueue("control", row)
 
     def _enqueue(self, stream_name, row):
