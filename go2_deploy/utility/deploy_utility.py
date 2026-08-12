@@ -1,6 +1,5 @@
 import torch
 from deploy_config import DeployConfig
-from go2_deploy.state import State
 from gym.utils.torch_quat import quat_rotate_inverse
 from unitree_sdk2py.idl.default import unitree_go_msg_dds__LowCmd_
 from unitree_sdk2py.utils.crc import CRC
@@ -97,18 +96,35 @@ def lowstate_to_obs(main_controller, lowstate_msg):
     return obs_vector
 
 
+# Return torch.tensor(12): actual target position from Actor output
+def action_to_target_pos(main_controller, action):
+    if main_controller.cfg.task_name == "go2trot":
+        return (
+            action
+            + main_controller.cfg.default_dof_pos
+            + main_controller._gait_reference
+        )
+    else:
+        return action + main_controller.cfg.default_dof_pos
+
+
+# Return torch.tensor(12): the Actor output corresponding to
+# absolute position target_pos
+def target_pos_to_action(main_controller, target_pos):
+    if main_controller.cfg.task_name == "go2trot":
+        return (
+            target_pos
+            - main_controller.cfg.default_dof_pos
+            - main_controller._gait_reference
+        )
+    else:
+        return target_pos
+
+
 # Returns LowCmd_ from the actor output action_qgm_convention, kp_mult
 # Accounts for gait_reference (when applicable) and default_pos
 def action_to_lowcmd(main_controller, action_qgym_convention, kp_mult=1.0):
-    gait_reference = torch.zeros_like(action_qgym_convention)
-    if (
-        main_controller.cfg.task_name == "go2trot"
-        and main_controller._state == State.CUSTOM_CTRL
-    ):
-        gait_reference += main_controller.gait_reference
-
-    default_pos = main_controller.cfg.default_dof_pos
-    target_pos_qgym = gait_reference + default_pos + action_qgym_convention
+    target_pos_qgym = action_to_target_pos(main_controller, action_qgym_convention)
     target_pos = target_pos_qgym[QGYM_TO_UNITREE_JOINT_IDX]
 
     target_pos = torch.clip(

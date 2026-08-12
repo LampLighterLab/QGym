@@ -95,7 +95,7 @@ class MainController:
     def _init_go2trot_buffers(self):
         self.phase_frequency = self.cfg.phase_frequency
         self.phase = 0.0
-        self.gait_reference = torch.zeros(12)
+        self._gait_reference = torch.zeros(12)
         self._gait_phase_offsets = torch.tensor([0, math.pi, math.pi, 0])
         self._gait_dof_phase_offsets = self._gait_phase_offsets.repeat_interleave(3)
         self._gait_joint_offsets = torch.tensor(4 * [0.0, 0.96, -1.36])
@@ -160,7 +160,7 @@ class MainController:
     def _process_go2trot_buffers(self, t):
         self.phase = 2 * math.pi * self.phase_frequency * t % (2 * math.pi)
         joint_phase = self.phase + self._gait_dof_phase_offsets
-        self.gait_reference = (
+        self._gait_reference = (
             self._gait_joint_offsets
             + self._gait_joint_amplitudes * torch.sin(joint_phase)
         )
@@ -195,7 +195,7 @@ class MainController:
         if self._state == State.CUSTOM_CTRL:
             return self.rl_controller.act(last_obs)
         elif self._state == State.INTERMEDIATE:
-            return self.default_pos
+            return deploy_utility.target_pos_to_action(self, self.intermediate_pos)
         else:
             print("Should not be using RL controller! This should not happen")
             self._estop_flag = True
@@ -208,11 +208,11 @@ class MainController:
             self._estop_flag = False
             return
 
-        if self.lowcmd_thread.IsAlive():
-            self.lowcmd_thread.Wait()
-
         self._estop_flag = False
         self._state = State.EMERGENCY_STOP
+
+        if self.lowcmd_thread.IsAlive():
+            self.lowcmd_thread.Wait()
 
         self.emergency_lowcmd_thread = RecurrentThread(
             interval=0.01, target=self._emergency_control_loop
@@ -267,12 +267,12 @@ class MainController:
             print("Must be in recovery state to switch to intermediate")
             return
 
-        self.default_pos = torch.tensor(
+        self.intermediate_pos = torch.tensor(
             deploy_utility._get_obs_dof_pos_obs(self, self.last_lowstate_msg)
-        )
-        print(self.default_pos)
+        ).clone()
         self._state = State.INTERMEDIATE
         print("Switching to intermediate")
+
         self.motion_switcher_client.ReleaseMode()
         mode = self.motion_switcher_client.CheckMode()[1]["name"]
         while mode != "":
