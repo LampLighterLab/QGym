@@ -1,3 +1,5 @@
+import mujoco
+
 from gym.envs.base.legged_robot_config import (
     LeggedRobotCfg,
     LeggedRobotRunnerCfg,
@@ -181,6 +183,9 @@ class Go2TrotCfg(LeggedRobotCfg):
 
     class mjspec_option_attributes:
         ccd_iterations = 50
+        # See Go2Cfg: the default MuJoCo 3.11 native multi-contact CCD path
+        # crashes on a valid fallen-pose cylinder/cylinder collision.
+        disableflags = int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
 
 
 class Go2TrotRunnerCfg(LeggedRobotRunnerCfg):

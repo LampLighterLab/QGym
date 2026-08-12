@@ -89,6 +89,7 @@ gym/smooth_exploration/figures*
 
 # vsim
 resources/robots/*/vsim/*.vsim
+resources/robots/*/vsim/assets/
 thirdparty/vlearn
 
 # Local simulator and notebook outputs

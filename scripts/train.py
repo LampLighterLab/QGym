@@ -15,6 +15,27 @@ from gym.utils.logging_and_saving import local_code_save_helper
 from gym.utils.logging_and_saving import wandb_singleton
 
 
+def apply_contact_friction_dr_override(env_cfg, mode):
+    """Apply the CLI friction-DR choice before backend topology is created."""
+    if mode == "config":
+        return
+    settings = getattr(env_cfg, "domain_randomization", None)
+    if settings is None:
+        raise ValueError(
+            "--contact-friction-dr requires a domain_randomization config block"
+        )
+    if mode == "off":
+        settings.contact_friction_range = None
+        return
+    if mode == "on":
+        if settings.contact_friction_range is None:
+            raise ValueError(
+                "--contact-friction-dr=on requires a configured contact_friction_range"
+            )
+        return
+    raise ValueError(f"unknown contact-friction DR mode {mode!r}")
+
+
 def get_train_args(argv=None):
     parser = argparse.ArgumentParser(description="Train a Q2 task")
     parser.add_argument(
@@ -46,6 +67,13 @@ def get_train_args(argv=None):
         type=str,
         default=None,
         help="Override experiment_name (log dir is logs/<experiment_name>/...)",
+    )
+    parser.add_argument(
+        "--contact-friction-dr",
+        choices=["config", "on", "off"],
+        default="config",
+        help="Use the task config, require its friction DR, or disable friction "
+        "DR. Applied before backend setup so Warp/VSim choose the right topology.",
     )
     parser.add_argument(
         "--resume",
@@ -89,6 +117,8 @@ def setup():
         experiment_name=args.experiment_name,
         load_run=args.load_run,
     )
+
+    apply_contact_friction_dr_override(env_cfg, args.contact_friction_dr)
 
     # Apply CLI overrides
     if args.num_envs is not None:

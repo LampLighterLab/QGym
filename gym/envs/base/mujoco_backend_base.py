@@ -55,7 +55,7 @@ class MuJocoBackendBase(SimBackend):
         self._penalised_contact_indices: torch.Tensor = None
         self._termination_contact_indices: torch.Tensor = None
 
-        # Domain-parameter source of truth.  The CPU backend activates these
+        # Domain-parameter source of truth. The CPU backend activates these
         # values on its shared model per environment; Warp overrides them with
         # per-world native views.
         self._contact_friction_t: torch.Tensor = None
@@ -185,19 +185,6 @@ class MuJocoBackendBase(SimBackend):
 
         if terrain_sliding_friction is not None:
             self._nominal_contact_friction = float(terrain_sliding_friction)
-
-        # Check for manually set mjModel attributes
-        if hasattr(cfg, "mjspec_attributes"):
-            for name in dir(cfg.mjspec_attributes):
-                if not name.startswith("_"):
-                    setattr(spec, name, getattr(cfg.mjspec_attributes, name))
-
-        if hasattr(cfg, "mjspec_option_attributes"):
-            for name in dir(cfg.mjspec_option_attributes):
-                if not name.startswith("_"):
-                    setattr(
-                        spec.option, name, getattr(cfg.mjspec_option_attributes, name)
-                    )
 
         # Check for manually set mjModel attributes
         if hasattr(cfg, "mjspec_attributes"):
