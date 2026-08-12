@@ -1,12 +1,12 @@
 """Plain MuJoCo (mj_step) backend — no Warp dependency.
 
-Works on any platform (Linux CPU, Mac Apple Silicon).  One shared MjModel,
+Works on any platform (Linux CPU, Mac Apple Silicon). One shared MjModel,
 one MjData per environment; physics runs in a Python loop and state is copied
 numpy→torch after each step.
 """
 
-import torch
 import mujoco
+import torch
 
 from gym.envs.base.domain_randomization import contact_friction_range
 from gym.envs.base.mujoco_backend_base import (
@@ -21,7 +21,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
 
     def __init__(self) -> None:
         super().__init__()
-        self._datas: list = []
+        self._datas: list[mujoco.MjData] = []
 
         # State tensors (allocated in setup)
         self._dof_state_t: torch.Tensor = None  # [N, num_dof, 2]
@@ -72,12 +72,8 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self,
         env_ids: torch.Tensor,
         coefficients: torch.Tensor,
-        *,
-        validate: bool = True,
     ) -> None:
-        ids, values = self._prepare_contact_friction_update(
-            env_ids, coefficients, self._num_envs, validate
-        )
+        ids, values = self._prepare_contact_friction_update(env_ids, coefficients)
         if ids.numel() == 0:
             return
         if not self._randomize_contact_friction:
@@ -108,9 +104,6 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         viewer_cfg = getattr(cfg, "viewer", None)
         self._show_ui = bool(getattr(viewer_cfg, "show_ui", False))
 
-        # Create one MjData per environment
-        self._datas = [mujoco.MjData(mjm) for _ in range(num_envs)]
-
         # Allocate PyTorch state tensors
         self._dof_state_t = torch.zeros(num_envs, self._num_dof, 2, device=device)
         self._dof_pos_view = self._dof_state_t[..., 0]
@@ -127,6 +120,11 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self._contact_friction_t = torch.full(
             (num_envs,), self._nominal_contact_friction, device=device
         )
+
+        # Each serial world has private state but shares the same model. The
+        # active environment's mutable physical parameters are selected before
+        # every native operation.
+        self._datas = [mujoco.MjData(mjm) for _ in range(num_envs)]
 
     # ── Per-step ───────────────────────────────────────────────────────────────
 

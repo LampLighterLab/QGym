@@ -169,12 +169,8 @@ class VSimBackend(SimBackend):
         self,
         env_ids: torch.Tensor,
         coefficients: torch.Tensor,
-        *,
-        validate: bool = True,
     ) -> None:
-        ids, values = self._prepare_contact_friction_update(
-            env_ids, coefficients, self._num_envs, validate
-        )
+        ids, values = self._prepare_contact_friction_update(env_ids, coefficients)
         if ids.numel() == 0:
             return
         if not self._randomize_contact_friction:

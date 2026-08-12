@@ -1,3 +1,5 @@
+import mujoco
+
 from gym.envs.base.legged_robot_config import (
     LeggedRobotCfg,
     LeggedRobotRunnerCfg,
@@ -146,6 +148,11 @@ class Go2Cfg(LeggedRobotCfg):
 
     class mjspec_option_attributes:
         ccd_iterations = 50
+        # MuJoCo 3.11's native multi-contact CCD segfaults on a valid fallen
+        # Go2 pose involving overlapping lower-leg cylinders. Primitive
+        # contacts (including foot/ground) still retain their multi-point
+        # colliders when this general convex multi-CCD path is disabled.
+        disableflags = int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
 
 
 class Go2RunnerCfg(LeggedRobotRunnerCfg):

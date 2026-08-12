@@ -15,7 +15,11 @@ projectiles are outside the current scope.
 Domain randomization is returning as a new backend-neutral feature. The first
 milestone—independent episode-level contact friction—is implemented for
 MuJoCo CPU, MuJoCo Warp, and VSim. `DR.md` defines the semantics, evidence, and
-remaining progression. Do not reintroduce legacy engine-specific callbacks.
+remaining progression. The final speed matrix and backend-specific tests pass.
+A deterministic MuJoCo 3.11 crash on a valid fallen Go2 pose was isolated to
+general convex multi-contact CCD; Go2 disables that path and retains primitive
+multi-point contacts, with the captured pose covered by a subprocess
+regression. Do not reintroduce legacy engine-specific callbacks.
 
 ## Architecture
 

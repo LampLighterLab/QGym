@@ -27,7 +27,6 @@ class LeggedRobot(BaseTask):
         self.domain_randomizer = DomainRandomizer(
             self.cfg,
             self._backend,
-            self.num_envs,
             self.device,
         )
         reset_mode = self.cfg.init_state.reset_mode

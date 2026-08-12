@@ -150,7 +150,16 @@ uv run --frozen scripts/train.py --task pendulum --device cpu --num_envs 256 --h
 
 # GPU training (Linux only, requires mujoco-warp)
 uv run --frozen scripts/train.py --task mini_cheetah --device cuda:0 --num_envs 4096 --headless
+
+# Deliberately disable a task's configured contact-friction randomization
+uv run --frozen scripts/train.py --task go2trot --device cuda:0 \
+    --contact-friction-dr off --num_envs 4096 --headless
 ```
+
+`--contact-friction-dr config` (the default) follows the task config. `on`
+requires the task to configure a friction range, while `off` disables that
+axis before backend setup. This distinction matters because MuJoCo Warp and
+VSim choose their native parameter topology during setup.
 
 ### Resume or play with the saved configuration
 
@@ -261,6 +270,8 @@ uv run scripts/train.py [OPTIONS]
   --load_run TEXT     Run directory below the selected experiment
   --checkpoint INT    Checkpoint iteration (default: latest)
   --original_cfg      Load environment and runner configs from the selected run
+  --contact-friction-dr {config,on,off}
+                      Follow, require, or disable configured friction DR
   --headless          Disable GUI viewer
   --disable_wandb     Disable Weights & Biases logging (default: on)
 ```

@@ -138,24 +138,16 @@ class SimBackend(ABC):
         self,
         env_ids: torch.Tensor,
         coefficients: torch.Tensor,
-        *,
-        validate: bool = True,
     ) -> None:
-        """Apply one effective sliding-friction coefficient per environment.
-
-        ``validate=False`` is reserved for values produced by the validated
-        domain sampler. It avoids host synchronization in the CUDA reset path.
-        """
+        """Apply one effective sliding-friction coefficient per environment."""
         raise NotImplementedError
 
     def _prepare_contact_friction_update(
         self,
         env_ids: torch.Tensor,
         coefficients: torch.Tensor,
-        num_envs: int,
-        validate: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Normalize a friction update and optionally validate explicit input."""
+        """Move a friction update to the backend device and match its shape."""
         ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device).flatten()
         values = torch.as_tensor(
             coefficients, dtype=torch.float, device=self.device
@@ -165,16 +157,6 @@ class SimBackend(ABC):
                 "one contact-friction coefficient is required per environment: "
                 f"{ids.numel()} ids vs {values.numel()} values"
             )
-        if ids.numel() == 0:
-            return ids, values
-        if not validate:
-            return ids, values
-        if ids.min() < 0 or ids.max() >= num_envs:
-            raise IndexError(f"environment ids must be in [0, {num_envs})")
-        if torch.unique(ids).numel() != ids.numel():
-            raise ValueError("environment ids must be unique")
-        if not torch.isfinite(values).all() or (values < 0.0).any():
-            raise ValueError("contact-friction coefficients must be finite and >= 0")
         return ids, values
 
     # ── Per-step ────────────────────────────────────────────────────────────

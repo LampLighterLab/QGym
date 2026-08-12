@@ -15,6 +15,7 @@ also write a human-readable JSON summary.
 """
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -101,6 +102,46 @@ def set_deterministic_basic_state(env):
         env._reset_buffers()
 
 
+def configure_contact_friction_grid(env_cfg, friction_grid):
+    """Configure native per-environment friction storage before backend setup."""
+    if friction_grid is None:
+        return
+    settings = getattr(env_cfg, "domain_randomization", None)
+    if settings is None:
+        raise ValueError(
+            "--contact_friction_grid requires a task with contact-friction "
+            "domain randomization support"
+        )
+    settings.contact_friction_range = [float(value) for value in friction_grid]
+
+
+def crossed_contact_friction_grid(command_cases, low, high):
+    """Give every command case the same evenly spaced friction levels."""
+    command_cases = np.asarray(command_cases)
+    values = np.empty(len(command_cases), dtype=np.float32)
+    for command_case in dict.fromkeys(command_cases.tolist()):
+        indices = np.flatnonzero(command_cases == command_case)
+        values[indices] = np.linspace(low, high, len(indices), dtype=np.float32)
+    return values
+
+
+def current_contact_friction(env):
+    """Return one recorded contact coefficient per environment.
+
+    Fixed-base tasks do not construct ``DomainRandomizer`` because contacts are
+    disabled for them.  Retain the evaluator's general-task behavior by
+    recording their configured nominal coefficient instead.
+    """
+    randomizer = getattr(env, "domain_randomizer", None)
+    if randomizer is None:
+        terrain = getattr(env.cfg, "terrain", None)
+        nominal = float(getattr(terrain, "dynamic_friction", 1.0))
+        return np.full(env.num_envs, nominal, dtype=np.float32)
+    return (
+        randomizer.contact_friction.detach().cpu().numpy().astype(np.float32, copy=True)
+    )
+
+
 def build(
     task,
     eval_backend,
@@ -110,6 +151,7 @@ def build(
     ckpt,
     reset_mode,
     seed,
+    contact_friction_grid=None,
 ):
     import gym.envs  # noqa: F401 — registers tasks
 
@@ -120,7 +162,12 @@ def build(
         if root * root != num_envs:
             raise ValueError(f"num_envs must be a perfect square; got {num_envs}")
 
-    env_cfg, train_cfg = task_registry.get_cfgs(task)
+    registered_env_cfg, registered_train_cfg = task_registry.get_cfgs(task)
+    # Registry configs are process-wide instances. Evaluation overrides must
+    # not leak into a later programmatic build in the same process.
+    env_cfg = copy.deepcopy(registered_env_cfg)
+    train_cfg = copy.deepcopy(registered_train_cfg)
+    configure_contact_friction_grid(env_cfg, contact_friction_grid)
     env_cfg.env.num_envs = num_envs
     env_cfg.init_state.reset_mode = reset_mode
     # Keep the eval controlled: no pushes, fixed commands for the whole episode.
@@ -208,6 +255,16 @@ def main():
         help="contact-force threshold in newtons for gait-quality metrics",
     )
     p.add_argument(
+        "--contact_friction_grid",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        default=None,
+        help="evaluate an explicit crossed friction grid. Every command case "
+        "receives the same evenly spaced LOW..HIGH levels; LOW=HIGH is a "
+        "fixed-friction domain.",
+    )
+    p.add_argument(
         "--velocity_impulse",
         type=float,
         default=0.0,
@@ -250,6 +307,7 @@ def main():
         checkpoint_path,
         args.reset_mode,
         args.seed,
+        args.contact_friction_grid,
     )
     weights = runner.critic_cfg["reward"]["weights"]  # {term: weight}, zeros removed
     terms = list(weights)
@@ -297,6 +355,20 @@ def main():
         if is_pendulum
         else apply_command_profile(env, args.command_profile)
     )
+    if args.contact_friction_grid is not None:
+        friction_low, friction_high = args.contact_friction_grid
+        applied_contact_friction = crossed_contact_friction_grid(
+            command_cases,
+            friction_low,
+            friction_high,
+        )
+        all_env_ids = torch.arange(N, dtype=torch.long, device=dev)
+        env._backend.set_contact_friction(
+            all_env_ids,
+            torch.as_tensor(applied_contact_friction, device=dev),
+        )
+    else:
+        applied_contact_friction = current_contact_friction(env)
     eval_commands = (
         None
         if is_pendulum
@@ -626,6 +698,13 @@ def main():
         seed=np.int64(args.seed),
         settling_time_s=np.float32(args.settling_time),
         contact_threshold_n=np.float32(args.contact_threshold),
+        contact_friction=applied_contact_friction.astype(np.float32),
+        contact_friction_grid=np.asarray(
+            args.contact_friction_grid
+            if args.contact_friction_grid is not None
+            else [np.nan, np.nan],
+            dtype=np.float32,
+        ),
         mean_reward=mean_reward.astype(np.float32),
         survived=survived,
         ep_len=ep_len.astype(np.float32),
@@ -651,6 +730,7 @@ def main():
                 "settling_time_s": args.settling_time,
                 "command_profile": args.command_profile,
                 "contact_threshold_n": args.contact_threshold,
+                "contact_friction_grid": args.contact_friction_grid,
                 "robot_mass_kg": robot_mass_kg,
                 "velocity_impulse_m_per_s": args.velocity_impulse,
                 "impulse_start_time_s": args.impulse_start_time,
