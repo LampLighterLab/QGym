@@ -1,14 +1,20 @@
 """Plain MuJoCo (mj_step) backend — no Warp dependency.
 
-Works on any platform (Linux CPU, Mac Apple Silicon). One shared MjModel,
-one MjData per environment; physics runs in a Python loop and state is copied
-numpy→torch after each step.
+Works on any platform (Linux CPU, Mac Apple Silicon). Each environment owns an
+MjData. Models are shared unless link-mass DR requires one compact model per
+environment; physics runs in a Python loop and state is copied numpy→torch
+after each step.
 """
+
+import copy
 
 import mujoco
 import torch
 
-from gym.envs.base.domain_randomization import contact_friction_range
+from gym.envs.base.domain_randomization import (
+    contact_friction_range,
+    link_mass_scale_range,
+)
 from gym.envs.base.mujoco_backend_base import (
     MuJocoBackendBase,
     WXYZ_TO_XYZW,
@@ -37,6 +43,8 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self._viewer_key_callback = None
         self._viewer_overlay_fn = None  # called each render() before sync()
         self._randomize_contact_friction = False
+        self._randomize_link_mass = False
+        self._models: list[mujoco.MjModel] | None = None
 
     # ── State tensors ──────────────────────────────────────────────────────────
 
@@ -81,14 +89,55 @@ class MuJocoCPUBackend(MuJocoBackendBase):
                 "contact-friction randomization was not enabled before setup"
             )
         self._contact_friction_t[ids] = values
+        if self._models is not None:
+            for env_id, value in zip(ids.tolist(), values.tolist()):
+                self._set_model_contact_friction(self._models[env_id], value)
+
+    def set_link_mass_scale(
+        self,
+        env_ids: torch.Tensor,
+        scales: torch.Tensor,
+    ) -> None:
+        ids, values = self._prepare_link_mass_scale_update(env_ids, scales)
+        if ids.numel() == 0:
+            return
+        if not self._randomize_link_mass:
+            raise RuntimeError("link-mass randomization was not enabled before setup")
+
+        masses = self._nominal_link_mass * values
+        inertias = self._nominal_link_inertia * values.unsqueeze(-1)
+        self._link_mass_t[ids] = masses
+        self._link_inertia_t[ids] = inertias
+        body_indices = self._canonical_to_native_body_np
+        for row, env_id in enumerate(ids.tolist()):
+            model = self._models[env_id]
+            data = self._datas[env_id]
+            model.body_mass[body_indices] = masses[row].cpu().numpy()
+            model.body_inertia[body_indices] = inertias[row].cpu().numpy()
+
+            qpos = data.qpos.copy()
+            qvel = data.qvel.copy()
+            warmstart = data.qacc_warmstart.copy()
+            time = data.time
+            mujoco.mj_setConst(model, data)
+            data.qpos[:] = qpos
+            data.qvel[:] = qvel
+            data.time = time
+            mujoco.mj_forward(model, data)
+            data.qacc_warmstart[:] = warmstart
 
     def _activate_domain(self, env_id: int) -> None:
         """Activate one environment's parameters on the shared CPU model."""
-        if not self._randomize_contact_friction:
+        if not self._randomize_contact_friction or self._models is not None:
             return
         self._set_model_contact_friction(
             self._mjm, float(self._contact_friction_t[env_id])
         )
+
+    def _model_for_env(self, env_id: int) -> mujoco.MjModel:
+        if self._models is None:
+            return self._mjm
+        return self._models[env_id]
 
     # ── World building ─────────────────────────────────────────────────────────
 
@@ -96,10 +145,15 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self._device = device
         self._num_envs = num_envs
         self._randomize_contact_friction = contact_friction_range(cfg) is not None
+        self._randomize_link_mass = link_mass_scale_range(cfg) is not None
+        headless = task.headless if task is not None else True
 
-        mjm = self._load_model(cfg)
+        mjm = self._load_model(
+            cfg, discard_visual=self._randomize_link_mass and headless
+        )
         self._configure_model(mjm, cfg, device)
         self._run_task_callbacks(mjm, task)
+        self._initialize_link_properties(mjm, num_envs, device)
 
         viewer_cfg = getattr(cfg, "viewer", None)
         self._show_ui = bool(getattr(viewer_cfg, "show_ui", False))
@@ -121,10 +175,14 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             (num_envs,), self._nominal_contact_friction, device=device
         )
 
-        # Each serial world has private state but shares the same model. The
-        # active environment's mutable physical parameters are selected before
-        # every native operation.
-        self._datas = [mujoco.MjData(mjm) for _ in range(num_envs)]
+        # Mass changes require environment-specific derived model constants.
+        # The headless model has already discarded visual assets, so private
+        # copies remain compact. Other serial worlds share one model.
+        if self._randomize_link_mass:
+            self._models = [mjm] + [copy.copy(mjm) for _ in range(num_envs - 1)]
+            self._datas = [mujoco.MjData(model) for model in self._models]
+        else:
+            self._datas = [mujoco.MjData(mjm) for _ in range(num_envs)]
 
     # ── Per-step ───────────────────────────────────────────────────────────────
 
@@ -134,7 +192,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         for i, d in enumerate(self._datas):
             self._activate_domain(i)
             d.qfrc_applied[off:] = torques_np[i]
-            mujoco.mj_step(self._mjm, d)
+            mujoco.mj_step(self._model_for_env(i), d)
         self._sync_state_from_mujoco()
 
     def _sync_state_from_mujoco(self) -> None:
@@ -146,7 +204,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             self._activate_domain(i)
             # cfrc_ext is only populated with constraint/contact forces by
             # mj_rnePostConstraint; mj_step alone leaves it at zero.
-            mujoco.mj_rnePostConstraint(self._mjm, d)
+            mujoco.mj_rnePostConstraint(self._model_for_env(i), d)
             self._dof_pos_view[i] = torch.from_numpy(d.qpos[qoff:][dof_order].copy())
             self._dof_vel_view[i] = torch.from_numpy(d.qvel[voff:][dof_order].copy())
             self._contact_forces_t[i] = torch.from_numpy(
@@ -174,25 +232,27 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         voff = self._qvel_offset
         for i in env_ids.tolist():
             self._activate_domain(i)
+            model = self._model_for_env(i)
             self._datas[i].qpos[qoff:] = (
                 self._dof_pos_view[i].cpu().numpy()[self._native_to_canonical_dof_np]
             )
             self._datas[i].qvel[voff:] = (
                 self._dof_vel_view[i].cpu().numpy()[self._native_to_canonical_dof_np]
             )
-            mujoco.mj_forward(self._mjm, self._datas[i])
+            mujoco.mj_forward(model, self._datas[i])
 
     def reset_root_state(self, env_ids: torch.Tensor) -> None:
         if not self._has_free_joint:
             return
         for i in env_ids.tolist():
             self._activate_domain(i)
+            model = self._model_for_env(i)
             rs = self._root_states_t[i].cpu()
             self._datas[i].qpos[:3] = rs[:3].numpy()
             self._datas[i].qpos[3:7] = rs[3:7][XYZW_TO_WXYZ].numpy()
             self._datas[i].qvel[:3] = rs[7:10].numpy()
             self._datas[i].qvel[3:6] = rs[10:13].numpy()
-            mujoco.mj_forward(self._mjm, self._datas[i])
+            mujoco.mj_forward(model, self._datas[i])
 
     def set_all_root_states(self) -> None:
         self.reset_root_state(torch.arange(self._num_envs))

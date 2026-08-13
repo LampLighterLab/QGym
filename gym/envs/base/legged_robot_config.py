@@ -64,6 +64,10 @@ class LeggedRobotCfg(BaseConfig):
         # Sampled independently for resetting environments at episode reset.
         # None disables the parameter.
         contact_friction_range = None
+        stiffness_scale_range = None
+        damping_scale_range = None
+        # Mass and diagonal inertia are scaled together for each robot link.
+        link_mass_scale_range = None
 
     class init_state:
         # * target state when action = 0, also reset positions for basic mode

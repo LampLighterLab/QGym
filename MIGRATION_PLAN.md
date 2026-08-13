@@ -217,9 +217,10 @@ and the package no longer exports unreachable implementations.
    contact friction. Native routing, partial-reset isolation, full-task flow,
    and a predicted sliding threshold have been exercised on all three backend
    paths.
-2. Add backend-neutral stiffness and damping scaling from stored nominal gains.
-3. Add physically consistent link mass and inertia scaling, including derived
-   engine constants and body-weight-dependent reward normalization.
+2. **Complete:** backend-neutral stiffness and damping scaling from stored
+   nominal gains.
+3. **Complete:** physically consistent link mass and inertia scaling, including
+   derived engine constants and body-weight-dependent reward normalization.
 4. Add measured delay, bias, and noise axes only with explicit schedules.
 5. Keep motor-strength scaling low priority; if added, apply it to final torque
    rather than treating PD gain uncertainty as equivalent.

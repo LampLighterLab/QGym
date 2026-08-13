@@ -19,7 +19,10 @@ in-place updates (SimBackend contract: all tensors live after step() returns).
 
 import torch
 
-from gym.envs.base.domain_randomization import contact_friction_range
+from gym.envs.base.domain_randomization import (
+    contact_friction_range,
+    link_mass_scale_range,
+)
 from gym.envs.base.mujoco_backend_base import (
     MuJocoBackendBase,
     WXYZ_TO_XYZW,
@@ -52,6 +55,9 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._geom_friction_t: torch.Tensor = None
         self._pair_friction_t: torch.Tensor = None
         self._randomize_contact_friction = False
+        self._randomize_link_mass = False
+        self._body_mass_native_t: torch.Tensor = None
+        self._body_inertia_native_t: torch.Tensor = None
 
     # ── State tensors ──────────────────────────────────────────────────────────
 
@@ -147,6 +153,31 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         if self._pair_friction_t is not None:
             self._pair_friction_t[ids, :, 0:2] = values[:, None, None]
 
+    def set_link_mass_scale(
+        self,
+        env_ids: torch.Tensor,
+        scales: torch.Tensor,
+    ) -> None:
+        ids, values = self._prepare_link_mass_scale_update(env_ids, scales)
+        if ids.numel() == 0:
+            return
+        if not self._randomize_link_mass:
+            raise RuntimeError("link-mass randomization was not enabled before setup")
+
+        masses = self._nominal_link_mass * values
+        inertias = self._nominal_link_inertia * values.unsqueeze(-1)
+        self._link_mass_t[ids] = masses
+        self._link_inertia_t[ids] = inertias
+        body_ids = self._canonical_to_native_body
+        self._body_mass_native_t[ids[:, None], body_ids[None, :]] = masses
+        self._body_inertia_native_t[ids[:, None], body_ids[None, :]] = inertias
+
+        import mujoco_warp as mjw
+
+        with self._wp_ctx:
+            mjw.set_const(self._m, self._d)
+        self._sync_assembled_states()
+
     # ── World building ─────────────────────────────────────────────────────────
 
     def setup(self, cfg, num_envs: int, device: str, task=None) -> None:
@@ -157,6 +188,7 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._device = device
         self._num_envs = num_envs
         self._randomize_contact_friction = contact_friction_range(cfg) is not None
+        self._randomize_link_mass = link_mass_scale_range(cfg) is not None
 
         wp.init()
         self._wp_ctx = wp.ScopedDevice(device)
@@ -164,15 +196,25 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         mjm = self._load_model(cfg)
         self._configure_model(mjm, cfg, device)
         self._run_task_callbacks(mjm, task)
+        self._initialize_link_properties(mjm, num_envs, device)
 
         # Build Warp model and batched data inside the device scope
         with self._wp_ctx:
-            batch_sizes = None
+            batch_sizes = {}
             if self._randomize_contact_friction:
-                batch_sizes = {"geom_friction": num_envs}
+                batch_sizes["geom_friction"] = num_envs
                 if mjm.npair:
                     batch_sizes["pair_friction"] = num_envs
-            self._m = mjw.put_model(mjm, batch_sizes=batch_sizes)
+            if self._randomize_link_mass:
+                for name in (
+                    "body_mass",
+                    "body_inertia",
+                    "body_subtreemass",
+                    "body_invweight0",
+                    "dof_invweight0",
+                ):
+                    batch_sizes[name] = num_envs
+            self._m = mjw.put_model(mjm, batch_sizes=batch_sizes or None)
             mjd = mujoco.MjData(mjm)
             njmax = mjm.njmax if mjm.njmax > 0 else None
             self._d = mjw.put_data(mjm, mjd, nworld=num_envs, njmax=njmax)
@@ -189,6 +231,9 @@ class MuJocoWarpBackend(MuJocoBackendBase):
                 self._geom_friction_t = wp.to_torch(self._m.geom_friction)
                 if mjm.npair:
                     self._pair_friction_t = wp.to_torch(self._m.pair_friction)
+            if self._randomize_link_mass:
+                self._body_mass_native_t = wp.to_torch(self._m.body_mass)
+                self._body_inertia_native_t = wp.to_torch(self._m.body_inertia)
 
         # Scratch tensors for assembled state
         self._root_states_t = torch.zeros(num_envs, 13, device=device)

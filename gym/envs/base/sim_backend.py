@@ -159,6 +159,39 @@ class SimBackend(ABC):
             )
         return ids, values
 
+    @property
+    def link_mass(self) -> torch.Tensor:
+        """[num_envs, num_bodies] applied robot-link masses in kilograms."""
+        raise NotImplementedError
+
+    @property
+    def link_inertia(self) -> torch.Tensor:
+        """[num_envs, num_bodies, 3] applied diagonal link inertias."""
+        raise NotImplementedError
+
+    def set_link_mass_scale(
+        self,
+        env_ids: torch.Tensor,
+        scales: torch.Tensor,
+    ) -> None:
+        """Scale each canonical link's nominal mass and diagonal inertia."""
+        raise NotImplementedError
+
+    def _prepare_link_mass_scale_update(
+        self,
+        env_ids: torch.Tensor,
+        scales: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device).flatten()
+        values = torch.as_tensor(scales, dtype=torch.float, device=self.device)
+        expected = (ids.numel(), self.num_bodies)
+        if values.shape != expected:
+            raise ValueError(
+                "one link-mass scale is required per environment and canonical "
+                f"body: expected {expected}, got {tuple(values.shape)}"
+            )
+        return ids, values
+
     # ── Per-step ────────────────────────────────────────────────────────────
 
     @abstractmethod

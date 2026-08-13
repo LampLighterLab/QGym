@@ -47,7 +47,6 @@ class Go2Trot(LeggedRobot):
             dtype=torch.float,
             device=self.device,
         )
-        self._body_weight = self.cfg.asset.total_mass * 9.81
         self._update_phase_observation()
         self._update_gait_reference()
 
@@ -154,7 +153,8 @@ class Go2Trot(LeggedRobot):
     def _foot_contact_strength(self):
         """Map upward foot load smoothly from zero to nominal body-weight."""
         load = torch.clamp(
-            self.contact_forces[:, self.feet_indices, 2] / self._body_weight,
+            self.contact_forces[:, self.feet_indices, 2]
+            / (9.81 * self._backend.link_mass.sum(dim=1, keepdim=True)),
             min=0.0,
             max=1.0,
         )
