@@ -113,10 +113,10 @@ class MainController:
         )
         self.sportmodestate_subscriber.Init(self._on_sportmodestate_msg, 10)
         self.motion_switcher_client = MotionSwitcherClient()
-        self.motion_switcher_client.SetTimeout(10.0)
+        self.motion_switcher_client.SetTimeout(1.0)
         self.motion_switcher_client.Init()
         self.sport_client = SportClient()
-        self.sport_client.SetTimeout(10.0)
+        self.sport_client.SetTimeout(1.0)
         self.sport_client.Init()
         self.crc = CRC()
 
@@ -232,11 +232,12 @@ class MainController:
         self.motion_switcher_client.ReleaseMode()
         self.emergency_lowcmd_thread.Start()
         print("Emergency stop activated! Recovering in 10 s")
-        time.sleep(10)
+        time.sleep(5)
         self.emergency_lowcmd_thread.Wait()
         self.emergency_lowcmd_thread = None
         self._create_lowcmd_thread()
 
+        time.sleep(5)
         self.switch_to_recovery()
 
     # Can implement checking for unsafe conditions
@@ -273,18 +274,27 @@ class MainController:
             self.motion_switcher_client.SelectMode("mcf")
             mode = self.motion_switcher_client.CheckMode()[1]["name"]
 
-        self.sport_client.RecoveryStand()
-        time.sleep(10)
-        print("Recovered")
+        for _ in range(10):
+            error_code = self.sport_client.RecoveryStand()
+            if error_code == 0:
+                print("Recovered")
+                break
+            time.sleep(1)
+        else:
+            print("RecoveryStand did not succeed")
 
     def switch_to_intermediate(self):
         if self._state != State.RECOVERY:
             print("Must be in recovery state to switch to intermediate")
             return
 
-        self.intermediate_pos = torch.tensor(
-            deploy_utility._get_obs_dof_pos_obs(self, self.last_lowstate_msg)
-        ).clone()
+        self.intermediate_pos = (
+            torch.tensor(
+                deploy_utility._get_obs_dof_pos_obs(self, self.last_lowstate_msg)
+            )
+            .detach()
+            .clone()
+        )
         self._state = State.INTERMEDIATE
         print("Switching to intermediate")
 
