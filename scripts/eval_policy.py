@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from gym import GYM_ROOT_DIR
+from gym.envs.base.domain_randomization import apply_domain_randomization_override
 from gym.utils.helpers import class_to_dict, set_seed
 from gym.utils.legged_eval_metrics import (
     LeggedMetricAccumulator,
@@ -34,7 +34,6 @@ from gym.utils.legged_eval_metrics import (
     summarize_metrics,
     velocity_impulse_schedule,
 )
-from gym.utils.legged_signal_analysis import urdf_total_mass
 from gym.utils.original_cfg import load_original_cfgs_from_run, original_cfg_source_dir
 from gym.utils.policy_io import state_component_names, state_component_scales
 from gym.utils.task_registry import task_registry
@@ -115,6 +114,28 @@ def configure_contact_friction_grid(env_cfg, friction_grid):
     settings.contact_friction_range = [float(value) for value in friction_grid]
 
 
+def configure_contact_friction_dr(env_cfg, mode, friction_grid=None):
+    """Resolve friction DR before backend topology is created."""
+    if mode == "off" and friction_grid is not None:
+        raise ValueError("contact-friction DR off cannot be combined with a grid")
+    settings = getattr(env_cfg, "domain_randomization", None)
+    if settings is None:
+        if mode == "config" and friction_grid is None:
+            return
+        raise ValueError("contact-friction DR requires a domain_randomization block")
+    if mode == "off":
+        settings.contact_friction_range = None
+        return
+    if friction_grid is not None:
+        settings.contact_friction_range = [float(value) for value in friction_grid]
+    if mode == "on" and settings.contact_friction_range is None:
+        raise ValueError(
+            "contact-friction DR on requires a configured range or explicit grid"
+        )
+    if mode not in ("config", "on"):
+        raise ValueError(f"unknown contact-friction DR mode {mode!r}")
+
+
 def crossed_contact_friction_grid(command_cases, low, high):
     """Give every command case the same evenly spaced friction levels."""
     command_cases = np.asarray(command_cases)
@@ -152,6 +173,10 @@ def build(
     reset_mode,
     seed,
     contact_friction_grid=None,
+    contact_friction_dr="config",
+    original_cfg=False,
+    mujoco_njmax=None,
+    domain_randomization="config",
 ):
     import gym.envs  # noqa: F401 — registers tasks
 
@@ -162,12 +187,34 @@ def build(
         if root * root != num_envs:
             raise ValueError(f"num_envs must be a perfect square; got {num_envs}")
 
-    registered_env_cfg, registered_train_cfg = task_registry.get_cfgs(task)
+    checkpoint_path = resolve_ckpt(ckpt)
+    if original_cfg:
+        registered_env_cfg, registered_train_cfg = load_original_cfgs_from_run(
+            task, Path(checkpoint_path).parent
+        )
+    else:
+        registered_env_cfg, registered_train_cfg = task_registry.get_cfgs(task)
     # Registry configs are process-wide instances. Evaluation overrides must
     # not leak into a later programmatic build in the same process.
     env_cfg = copy.deepcopy(registered_env_cfg)
     train_cfg = copy.deepcopy(registered_train_cfg)
-    configure_contact_friction_grid(env_cfg, contact_friction_grid)
+    configure_contact_friction_dr(
+        env_cfg,
+        contact_friction_dr,
+        contact_friction_grid,
+    )
+    if domain_randomization == "off" and contact_friction_grid is not None:
+        raise ValueError(
+            "domain randomization off cannot be combined with a friction grid"
+        )
+    if contact_friction_dr != "config" and domain_randomization != "config":
+        raise ValueError(
+            "contact-friction and domain-randomization overrides cannot both "
+            "be explicit"
+        )
+    apply_domain_randomization_override(env_cfg, domain_randomization)
+    if mujoco_njmax is not None:
+        env_cfg.mjspec_attributes.njmax = int(mujoco_njmax)
     env_cfg.env.num_envs = num_envs
     env_cfg.init_state.reset_mode = reset_mode
     # Keep the eval controlled: no pushes, fixed commands for the whole episode.
@@ -194,7 +241,7 @@ def build(
         task, env_cfg, device=eval_device, headless=True, backend=eval_backend
     )
     runner = task_registry.make_alg_runner(env, train_cfg)
-    runner.load(resolve_ckpt(ckpt), load_optimizer=False)
+    runner.load(checkpoint_path, load_optimizer=False)
     runner.switch_to_eval()
     if reset_mode == "reset_to_basic":
         set_deterministic_basic_state(env)
@@ -265,6 +312,30 @@ def main():
         "fixed-friction domain.",
     )
     p.add_argument(
+        "--contact-friction-dr",
+        choices=["config", "on", "off"],
+        default="config",
+        help="Use the task config, require friction DR, or disable it before setup.",
+    )
+    p.add_argument(
+        "--domain-randomization",
+        choices=["config", "off", "friction-only"],
+        default="config",
+        help="Use the configured DR bundle, disable every axis, or retain only "
+        "configured contact-friction DR.",
+    )
+    p.add_argument(
+        "--original_cfg",
+        action="store_true",
+        help="Load the environment and runner configs saved beside the checkpoint.",
+    )
+    p.add_argument(
+        "--mujoco_njmax",
+        type=int,
+        default=None,
+        help="Override MuJoCo/Warp constraint capacity for evaluation.",
+    )
+    p.add_argument(
         "--velocity_impulse",
         type=float,
         default=0.0,
@@ -299,15 +370,19 @@ def main():
 
     checkpoint_path = os.path.abspath(resolve_ckpt(args.ckpt))
     env, runner = build(
-        args.task,
-        args.eval_backend,
-        args.eval_device,
-        args.num_envs,
-        args.t_end,
-        checkpoint_path,
-        args.reset_mode,
-        args.seed,
-        args.contact_friction_grid,
+        task=args.task,
+        eval_backend=args.eval_backend,
+        eval_device=args.eval_device,
+        num_envs=args.num_envs,
+        t_end=args.t_end,
+        ckpt=checkpoint_path,
+        reset_mode=args.reset_mode,
+        seed=args.seed,
+        contact_friction_grid=args.contact_friction_grid,
+        contact_friction_dr=args.contact_friction_dr,
+        original_cfg=args.original_cfg,
+        mujoco_njmax=args.mujoco_njmax,
+        domain_randomization=args.domain_randomization,
     )
     weights = runner.critic_cfg["reward"]["weights"]  # {term: weight}, zeros removed
     terms = list(weights)
@@ -321,11 +396,13 @@ def main():
     if args.contact_threshold <= 0:
         raise ValueError("contact_threshold must be positive")
     control_frequency = float(env.cfg.control.ctrl_frequency)
-    robot_mass_kg = (
-        None
-        if is_pendulum
-        else urdf_total_mass(env.cfg.asset.file.format(GYM_ROOT_DIR=GYM_ROOT_DIR))
-    )
+    applied_link_mass = None
+    robot_mass_kg = None
+    if not is_pendulum:
+        applied_link_mass = (
+            env._backend.link_mass.detach().cpu().numpy().astype(np.float32)
+        )
+        robot_mass_kg = applied_link_mass.sum(axis=1)
     if args.velocity_impulse < 0:
         raise ValueError("velocity_impulse cannot be negative")
     if args.impulse_directions <= 0:
@@ -591,7 +668,8 @@ def main():
             "hardware_metric_metadata": np.asarray(json.dumps(metric_metadata())),
             "actuated_dof_names": np.asarray(env.actuated_dof_names),
             "foot_names": np.asarray(env.robot_layout.body_groups["feet"]),
-            "robot_mass_kg": np.float32(robot_mass_kg),
+            "link_mass_kg": applied_link_mass,
+            "robot_mass_kg": robot_mass_kg,
             "impulse_step": impulse_steps,
             "impulse_direction_rad": impulse_angles,
             "impulse_delta_velocity": impulse_delta_velocity,
@@ -698,6 +776,10 @@ def main():
         seed=np.int64(args.seed),
         settling_time_s=np.float32(args.settling_time),
         contact_threshold_n=np.float32(args.contact_threshold),
+        contact_friction_dr=args.contact_friction_dr,
+        domain_randomization=args.domain_randomization,
+        original_cfg=np.bool_(args.original_cfg),
+        mujoco_njmax=np.int64(-1 if args.mujoco_njmax is None else args.mujoco_njmax),
         contact_friction=applied_contact_friction.astype(np.float32),
         contact_friction_grid=np.asarray(
             args.contact_friction_grid
@@ -731,7 +813,15 @@ def main():
                 "command_profile": args.command_profile,
                 "contact_threshold_n": args.contact_threshold,
                 "contact_friction_grid": args.contact_friction_grid,
-                "robot_mass_kg": robot_mass_kg,
+                "contact_friction_dr": args.contact_friction_dr,
+                "domain_randomization": args.domain_randomization,
+                "original_cfg": args.original_cfg,
+                "mujoco_njmax": args.mujoco_njmax,
+                "robot_mass_kg": float(np.mean(robot_mass_kg)),
+                "robot_mass_range_kg": [
+                    float(np.min(robot_mass_kg)),
+                    float(np.max(robot_mass_kg)),
+                ],
                 "velocity_impulse_m_per_s": args.velocity_impulse,
                 "impulse_start_time_s": args.impulse_start_time,
                 "impulse_stagger_time_s": args.impulse_stagger_time,

@@ -40,6 +40,31 @@ def _friction_cfg():
     )
 
 
+def _link_mass_cfg():
+    return SimpleNamespace(
+        seed=11,
+        asset=SimpleNamespace(
+            file=f"{GYM_ROOT_DIR}/resources/robots/pendulum/urdf/pendulum.urdf",
+            joint_damping=0.0,
+            rotor_inertia=0.0,
+            disable_gravity=False,
+            fix_base_link=True,
+            penalize_contacts_on=[],
+            terminate_after_contacts_on=[],
+        ),
+        init_state=SimpleNamespace(
+            pos=[0.0, 0.0, 0.0],
+            rot=[0.0, 0.0, 0.0, 1.0],
+        ),
+        domain_randomization=SimpleNamespace(
+            contact_friction_range=None,
+            link_mass_scale_range=[0.5, 2.0],
+        ),
+        sim=SimpleNamespace(gravity=[0.0, 0.0, -9.81]),
+        sim_dt=0.005,
+    )
+
+
 def _set_explicit_friction(backend):
     cached = backend.contact_friction
     backend.set_contact_friction(
@@ -80,7 +105,37 @@ def _assert_friction_changes_motion(backend):
     assert displacement[0] - displacement[1] > 0.5, displacement
 
 
-def _build_randomized_task(device, backend_name="mujoco"):
+def _assert_link_mass_changes_acceleration(backend):
+    pole = backend.body_names.index("pole")
+    nominal_mass = backend.link_mass.clone()
+    nominal_inertia = backend.link_inertia.clone()
+    scales = torch.ones(2, backend.num_bodies, device=backend.device)
+    scales[1, pole] = 2.0
+    backend.set_link_mass_scale(torch.tensor([0, 1], device=backend.device), scales)
+
+    torch.testing.assert_close(backend.link_mass[0], nominal_mass[0])
+    torch.testing.assert_close(backend.link_mass[1, pole], 2.0 * nominal_mass[1, pole])
+    torch.testing.assert_close(
+        backend.link_inertia[1, pole], 2.0 * nominal_inertia[1, pole]
+    )
+
+    backend.dof_pos.zero_()
+    backend.dof_vel.zero_()
+    backend.reset_dof_state(torch.arange(2, device=backend.device))
+    backend.step(torch.full((2, backend.num_dof), 0.1, device=backend.device))
+    speed = backend.dof_vel[:, 0].abs().cpu()
+    assert speed[0] / speed[1] == pytest.approx(2.0, rel=0.05)
+
+
+def _build_randomized_task(
+    device,
+    backend_name="mujoco",
+    *,
+    contact_friction=(0.5, 1.0),
+    stiffness=None,
+    damping=None,
+    link_mass=None,
+):
     from gym.envs.mini_cheetah.mini_cheetah import MiniCheetah
     from gym.envs.mini_cheetah.mini_cheetah_config import (
         MiniCheetahCfg,
@@ -93,7 +148,10 @@ def _build_randomized_task(device, backend_name="mujoco"):
     cfg.env.num_envs = 4
     cfg.seed = 17
     cfg.push_robots.toggle = False
-    cfg.domain_randomization.contact_friction_range = [0.5, 1.0]
+    cfg.domain_randomization.contact_friction_range = contact_friction
+    cfg.domain_randomization.stiffness_scale_range = stiffness
+    cfg.domain_randomization.damping_scale_range = damping
+    cfg.domain_randomization.link_mass_scale_range = link_mass
     task_registry.convert_frequencies_to_params(cfg, runner_cfg)
     backend = select_backend(cfg, device, backend_name)
     return MiniCheetah(cfg, device, True, backend)
@@ -104,7 +162,9 @@ def _assert_task_reset_randomization(device, backend_name="mujoco"):
     try:
         generator = torch.Generator(device=device).manual_seed(17)
         expected_initial = 0.5 + 0.5 * torch.rand(4, generator=generator, device=device)
-        assert env.domain_randomizer._generator.device == torch.device(device)
+        assert env.domain_randomizer._generators["contact_friction"].device == (
+            torch.device(device)
+        )
         torch.testing.assert_close(
             env.domain_randomizer.contact_friction, expected_initial
         )
@@ -115,6 +175,63 @@ def _assert_task_reset_randomization(device, backend_name="mujoco"):
         torch.testing.assert_close(
             env.domain_randomizer.contact_friction, expected_initial
         )
+    finally:
+        env._backend.close()
+
+
+def _assert_task_pd_randomization(device, backend_name="mujoco"):
+    env = _build_randomized_task(
+        device,
+        backend_name,
+        contact_friction=None,
+        stiffness=(0.8, 1.2),
+        damping=(0.7, 1.3),
+    )
+    try:
+        torch.testing.assert_close(
+            env.p_gains,
+            env.nominal_p_gains * env.domain_randomizer.stiffness_scale,
+        )
+        torch.testing.assert_close(
+            env.d_gains,
+            env.nominal_d_gains * env.domain_randomizer.damping_scale,
+        )
+        before_p = env.p_gains.clone()
+        before_d = env.d_gains.clone()
+        env._reset_idx(torch.tensor([1, 3], device=device))
+        torch.testing.assert_close(env.p_gains[[0, 2]], before_p[[0, 2]])
+        torch.testing.assert_close(env.d_gains[[0, 2]], before_d[[0, 2]])
+        assert not torch.equal(env.p_gains[[1, 3]], before_p[[1, 3]])
+        assert not torch.equal(env.d_gains[[1, 3]], before_d[[1, 3]])
+    finally:
+        env._backend.close()
+
+
+def _assert_task_link_mass_randomization(device, backend_name="mujoco"):
+    env = _build_randomized_task(
+        device,
+        backend_name,
+        contact_friction=None,
+        link_mass=(0.8, 1.2),
+    )
+    try:
+        scales = env.domain_randomizer.link_mass_scale
+        torch.testing.assert_close(
+            env._backend.link_mass,
+            env._backend._nominal_link_mass * scales,
+        )
+        torch.testing.assert_close(
+            env._backend.link_inertia,
+            env._backend._nominal_link_inertia * scales.unsqueeze(-1),
+        )
+        before_mass = env._backend.link_mass.clone()
+        before_inertia = env._backend.link_inertia.clone()
+        env._reset_idx(torch.tensor([1, 3], device=device))
+        torch.testing.assert_close(env._backend.link_mass[[0, 2]], before_mass[[0, 2]])
+        torch.testing.assert_close(
+            env._backend.link_inertia[[0, 2]], before_inertia[[0, 2]]
+        )
+        assert not torch.equal(env._backend.link_mass[[1, 3]], before_mass[[1, 3]])
     finally:
         env._backend.close()
 
@@ -242,6 +359,29 @@ def test_mujoco_cpu_task_randomizes_only_reset_environments():
     _assert_task_reset_randomization("cpu")
 
 
+def test_mujoco_cpu_task_randomizes_pd_gains_in_common_control_path():
+    _assert_task_pd_randomization("cpu")
+
+
+def test_mujoco_cpu_link_mass_and_inertia_change_acceleration():
+    from gym.envs.base.mujoco_cpu_backend import MuJocoCPUBackend
+
+    backend = MuJocoCPUBackend()
+    backend.setup(_link_mass_cfg(), num_envs=2, device="cpu", task=None)
+    try:
+        assert backend._models is not None
+        assert all(
+            data.model is model for data, model in zip(backend._datas, backend._models)
+        )
+        _assert_link_mass_changes_acceleration(backend)
+    finally:
+        backend.close()
+
+
+def test_mujoco_cpu_task_randomizes_link_mass_on_partial_reset():
+    _assert_task_link_mass_randomization("cpu")
+
+
 @pytest.mark.warp
 def test_mujoco_warp_applies_and_consumes_friction_per_world():
     if not torch.cuda.is_available():
@@ -266,6 +406,39 @@ def test_mujoco_warp_task_randomizes_only_reset_environments():
     if not torch.cuda.is_available():
         pytest.fail("Warp tests requested but CUDA is not available", pytrace=False)
     _assert_task_reset_randomization("cuda:0")
+
+
+@pytest.mark.warp
+def test_mujoco_warp_task_randomizes_pd_gains_in_common_control_path():
+    if not torch.cuda.is_available():
+        pytest.fail("Warp tests requested but CUDA is not available", pytrace=False)
+    _assert_task_pd_randomization("cuda:0")
+
+
+@pytest.mark.warp
+def test_mujoco_warp_link_mass_and_inertia_change_acceleration():
+    if not torch.cuda.is_available():
+        pytest.fail("Warp tests requested but CUDA is not available", pytrace=False)
+    from gym.envs.base.mujoco_warp_backend import MuJocoWarpBackend
+
+    backend = MuJocoWarpBackend()
+    backend.setup(_link_mass_cfg(), num_envs=2, device="cuda:0", task=None)
+    try:
+        assert backend._m.body_mass.shape[0] == 2
+        assert backend._m.body_inertia.shape[0] == 2
+        assert backend._m.body_subtreemass.shape[0] == 2
+        assert backend._m.body_invweight0.shape[0] == 2
+        assert backend._m.dof_invweight0.shape[0] == 2
+        _assert_link_mass_changes_acceleration(backend)
+    finally:
+        backend.close()
+
+
+@pytest.mark.warp
+def test_mujoco_warp_task_randomizes_link_mass_on_partial_reset():
+    if not torch.cuda.is_available():
+        pytest.fail("Warp tests requested but CUDA is not available", pytrace=False)
+    _assert_task_link_mass_randomization("cuda:0")
 
 
 @pytest.mark.vsim
@@ -299,3 +472,61 @@ def test_vsim_applies_and_consumes_friction_per_environment_set():
 def test_vsim_task_randomizes_only_reset_environments():
     vsim_guard()
     _assert_task_reset_randomization("cuda:0", "vsim")
+
+
+@pytest.mark.vsim
+def test_vsim_task_randomizes_pd_gains_without_changing_set_topology():
+    vsim_guard()
+    env = _build_randomized_task(
+        "cuda:0",
+        "vsim",
+        contact_friction=None,
+        stiffness=(0.8, 1.2),
+        damping=(0.7, 1.3),
+    )
+    try:
+        assert env._backend._grp.get_num_environment_sets() == 1
+        assert env._backend._grp.get_num_environments() == [4]
+        torch.testing.assert_close(
+            env.p_gains,
+            env.nominal_p_gains * env.domain_randomizer.stiffness_scale,
+        )
+        torch.testing.assert_close(
+            env.d_gains,
+            env.nominal_d_gains * env.domain_randomizer.damping_scale,
+        )
+    finally:
+        env._backend.close()
+
+
+@pytest.mark.vsim
+def test_vsim_link_mass_and_inertia_change_acceleration():
+    vsim_guard()
+    from gym.envs.base.vsim_backend import VSimBackend
+
+    backend = VSimBackend()
+    backend.setup(_link_mass_cfg(), num_envs=2, device="cuda:0", task=None)
+    try:
+        assert backend._grp.get_num_environment_sets() == 2
+        assert backend._grp.get_num_environments() == [1, 1]
+        _assert_link_mass_changes_acceleration(backend)
+
+        backend._link_property_mask.fill_(True)
+        backend._link_mass_native.fill_(float("nan"))
+        backend._link_inertia_native.fill_(float("nan"))
+        backend._gym.get_link_properties(backend._link_property_set_arr)
+        body_ids = backend._canonical_to_native_body
+        torch.testing.assert_close(
+            backend._link_mass_native[:, body_ids], backend.link_mass
+        )
+        torch.testing.assert_close(
+            backend._link_inertia_native[:, body_ids], backend.link_inertia
+        )
+    finally:
+        backend.close()
+
+
+@pytest.mark.vsim
+def test_vsim_task_randomizes_link_mass_on_partial_reset():
+    vsim_guard()
+    _assert_task_link_mass_randomization("cuda:0", "vsim")

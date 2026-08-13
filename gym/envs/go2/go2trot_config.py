@@ -135,6 +135,9 @@ class Go2TrotCfg(LeggedRobotCfg):
 
     class domain_randomization(LeggedRobotCfg.domain_randomization):
         contact_friction_range = [0.5, 1.0]
+        stiffness_scale_range = [0.9, 1.1]
+        damping_scale_range = [0.9, 1.1]
+        link_mass_scale_range = [0.9, 1.1]
 
     class asset(LeggedRobotCfg.asset):
         file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
@@ -147,7 +150,6 @@ class Go2TrotCfg(LeggedRobotCfg):
         disable_motors = False
         joint_damping = 0.01
         rotor_inertia = [0.002268, 0.002268, 0.005484] * 4
-        total_mass = 16.087  # sum of nominal URDF link masses [kg]
 
         class robot_layout:
             version = "go2_v1"

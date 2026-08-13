@@ -60,6 +60,10 @@ class MuJocoBackendBase(SimBackend):
         # per-world native views.
         self._contact_friction_t: torch.Tensor = None
         self._nominal_contact_friction: float = 1.0
+        self._link_mass_t: torch.Tensor = None
+        self._link_inertia_t: torch.Tensor = None
+        self._nominal_link_mass: torch.Tensor = None
+        self._nominal_link_inertia: torch.Tensor = None
 
     # ── SimBackend.device ─────────────────────────────────────────────────────
 
@@ -98,9 +102,17 @@ class MuJocoBackendBase(SimBackend):
     def termination_contact_indices(self) -> torch.Tensor:
         return self._termination_contact_indices
 
+    @property
+    def link_mass(self) -> torch.Tensor:
+        return self._link_mass_t
+
+    @property
+    def link_inertia(self) -> torch.Tensor:
+        return self._link_inertia_t
+
     # ── World building ─────────────────────────────────────────────────────────
 
-    def _load_model(self, cfg) -> mujoco.MjModel:
+    def _load_model(self, cfg, discard_visual: bool = False) -> mujoco.MjModel:
         """Load URDF, configure model (free joint, ground, physics), return MjModel."""
         asset_path = cfg.asset.file.format(GYM_ROOT_DIR=GYM_ROOT_DIR)
         # Cache URDF effort/velocity limits — MuJoCo drops these on import
@@ -108,6 +120,7 @@ class MuJocoBackendBase(SimBackend):
         self._urdf_limits = self._parse_urdf_limits(asset_path)
         spec = self._load_urdf_spec(asset_path)
         spec.compiler.balanceinertia = True
+        spec.compiler.discardvisual = discard_visual
 
         # Disable fusing links connected with rigid joints
         spec.compiler.fusestatic = False
@@ -118,29 +131,30 @@ class MuJocoBackendBase(SimBackend):
             freejoint = root_body.add_freejoint()
             freejoint.name = "root"
 
-        # Menagerie-style viewer defaults
-        spec.visual.global_.azimuth = 150
-        spec.visual.global_.elevation = -20
-        spec.visual.quality.shadowsize = 4096
-        spec.visual.headlight.ambient = [0.3, 0.3, 0.3]
-        spec.visual.headlight.diffuse = [0.6, 0.6, 0.6]
-        spec.visual.headlight.specular = [0.0, 0.0, 0.0]
+        if not discard_visual:
+            # Menagerie-style viewer defaults
+            spec.visual.global_.azimuth = 150
+            spec.visual.global_.elevation = -20
+            spec.visual.quality.shadowsize = 4096
+            spec.visual.headlight.ambient = [0.3, 0.3, 0.3]
+            spec.visual.headlight.diffuse = [0.6, 0.6, 0.6]
+            spec.visual.headlight.specular = [0.0, 0.0, 0.0]
 
-        # Gradient skybox + directional light apply to all scenes
-        sky = spec.add_texture()
-        sky.name = "skybox"
-        sky.type = mujoco.mjtTexture.mjTEXTURE_SKYBOX
-        sky.builtin = mujoco.mjtBuiltin.mjBUILTIN_GRADIENT
-        sky.rgb1 = [0.3, 0.5, 0.7]
-        sky.rgb2 = [0.0, 0.0, 0.0]
-        sky.width = 512
-        sky.height = 3072
+            # Gradient skybox + directional light apply to rendered scenes.
+            sky = spec.add_texture()
+            sky.name = "skybox"
+            sky.type = mujoco.mjtTexture.mjTEXTURE_SKYBOX
+            sky.builtin = mujoco.mjtBuiltin.mjBUILTIN_GRADIENT
+            sky.rgb1 = [0.3, 0.5, 0.7]
+            sky.rgb2 = [0.0, 0.0, 0.0]
+            sky.width = 512
+            sky.height = 3072
 
-        light = spec.worldbody.add_light()
-        light.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
-        light.pos = [0, 0, 1.5]
-        light.dir = [0, 0, -1]
-        light.castshadow = True
+            light = spec.worldbody.add_light()
+            light.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
+            light.pos = [0, 0, 1.5]
+            light.dir = [0, 0, -1]
+            light.castshadow = True
 
         # Checker ground plane only when terrain config requests one
         terrain_cfg = getattr(cfg, "terrain", None)
@@ -149,28 +163,30 @@ class MuJocoBackendBase(SimBackend):
             terrain_cfg is not None
             and getattr(terrain_cfg, "mesh_type", None) == "plane"
         ):
-            gtex = spec.add_texture()
-            gtex.name = "groundplane"
-            gtex.type = mujoco.mjtTexture.mjTEXTURE_2D
-            gtex.builtin = mujoco.mjtBuiltin.mjBUILTIN_CHECKER
-            gtex.mark = mujoco.mjtMark.mjMARK_EDGE
-            gtex.rgb1 = [0.2, 0.3, 0.4]
-            gtex.rgb2 = [0.1, 0.2, 0.3]
-            gtex.markrgb = [0.8, 0.8, 0.8]
-            gtex.width = 300
-            gtex.height = 300
+            if not discard_visual:
+                gtex = spec.add_texture()
+                gtex.name = "groundplane"
+                gtex.type = mujoco.mjtTexture.mjTEXTURE_2D
+                gtex.builtin = mujoco.mjtBuiltin.mjBUILTIN_CHECKER
+                gtex.mark = mujoco.mjtMark.mjMARK_EDGE
+                gtex.rgb1 = [0.2, 0.3, 0.4]
+                gtex.rgb2 = [0.1, 0.2, 0.3]
+                gtex.markrgb = [0.8, 0.8, 0.8]
+                gtex.width = 300
+                gtex.height = 300
 
-            gmat = spec.add_material()
-            gmat.name = "groundplane"
-            gmat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = "groundplane"
-            gmat.texrepeat = [5, 5]
-            gmat.texuniform = True
-            gmat.reflectance = 0.2
+                gmat = spec.add_material()
+                gmat.name = "groundplane"
+                gmat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = "groundplane"
+                gmat.texrepeat = [5, 5]
+                gmat.texuniform = True
+                gmat.reflectance = 0.2
 
             ground = spec.worldbody.add_geom()
             ground.type = mujoco.mjtGeom.mjGEOM_PLANE
             ground.size = [0, 0, 0.05]
-            ground.material = "groundplane"
+            if not discard_visual:
+                ground.material = "groundplane"
             # MuJoCo has one Coulomb coefficient for both sticking and
             # sliding; its three slots are sliding, torsional, and rolling
             # friction, not static, dynamic, and rolling. Use the configured
@@ -220,6 +236,22 @@ class MuJocoBackendBase(SimBackend):
             mjm.opt.gravity[:] = 0.0
 
         return mjm
+
+    def _initialize_link_properties(
+        self,
+        mjm: mujoco.MjModel,
+        num_envs: int,
+        device: str,
+    ) -> None:
+        body_indices = self._canonical_to_native_body_np
+        self._nominal_link_mass = torch.tensor(
+            mjm.body_mass[body_indices].copy(), dtype=torch.float, device=device
+        ).unsqueeze(0)
+        self._nominal_link_inertia = torch.tensor(
+            mjm.body_inertia[body_indices].copy(), dtype=torch.float, device=device
+        ).unsqueeze(0)
+        self._link_mass_t = self._nominal_link_mass.repeat(num_envs, 1)
+        self._link_inertia_t = self._nominal_link_inertia.repeat(num_envs, 1, 1)
 
     @staticmethod
     def _set_model_contact_friction(model: mujoco.MjModel, coefficient: float) -> None:

@@ -151,15 +151,21 @@ uv run --frozen scripts/train.py --task pendulum --device cpu --num_envs 256 --h
 # GPU training (Linux only, requires mujoco-warp)
 uv run --frozen scripts/train.py --task mini_cheetah --device cuda:0 --num_envs 4096 --headless
 
-# Deliberately disable a task's configured contact-friction randomization
+# Deliberately disable every configured domain-randomization axis
 uv run --frozen scripts/train.py --task go2trot --device cuda:0 \
-    --contact-friction-dr off --num_envs 4096 --headless
+    --domain-randomization off --num_envs 4096 --headless
+
+# Isolate contact friction for a controlled ablation
+uv run --frozen scripts/train.py --task go2trot --device cuda:0 \
+    --domain-randomization friction-only --num_envs 4096 --headless
 ```
 
-`--contact-friction-dr config` (the default) follows the task config. `on`
-requires the task to configure a friction range, while `off` disables that
-axis before backend setup. This distinction matters because MuJoCo Warp and
-VSim choose their native parameter topology during setup.
+`--domain-randomization config` (the default) follows the task config. `off`
+disables every axis, while `friction-only` disables PD-gain and link-mass DR
+but retains the configured friction range. The older, narrower
+`--contact-friction-dr` option can require or disable only friction. Do not
+combine the two overrides. These choices are applied before backend setup
+because MuJoCo Warp and VSim choose their native parameter topology there.
 
 ### Resume or play with the saved configuration
 
@@ -272,6 +278,8 @@ uv run scripts/train.py [OPTIONS]
   --original_cfg      Load environment and runner configs from the selected run
   --contact-friction-dr {config,on,off}
                       Follow, require, or disable configured friction DR
+  --domain-randomization {config,off,friction-only}
+                      Follow the task DR bundle, disable it, or isolate friction
   --headless          Disable GUI viewer
   --disable_wandb     Disable Weights & Biases logging (default: on)
 ```

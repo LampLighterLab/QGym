@@ -105,6 +105,9 @@ class Go2Cfg(LeggedRobotCfg):
 
     class domain_randomization(LeggedRobotCfg.domain_randomization):
         contact_friction_range = [0.5, 1.0]
+        stiffness_scale_range = [0.9, 1.1]
+        damping_scale_range = [0.9, 1.1]
+        link_mass_scale_range = [0.9, 1.1]
 
     class asset(LeggedRobotCfg.asset):
         file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"

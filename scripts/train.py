@@ -9,6 +9,7 @@ The selected backend is MuJoCo CPU/Warp or optional VSim.
 
 import argparse
 
+from gym.envs.base.domain_randomization import apply_domain_randomization_override
 from gym.utils.task_registry import task_registry
 from gym.utils.helpers import randomize_episode_counters, set_seed
 from gym.utils.logging_and_saving import local_code_save_helper
@@ -76,6 +77,13 @@ def get_train_args(argv=None):
         "DR. Applied before backend setup so Warp/VSim choose the right topology.",
     )
     parser.add_argument(
+        "--domain-randomization",
+        choices=["config", "off", "friction-only"],
+        default="config",
+        help="Use the configured DR bundle, disable every axis, or retain only "
+        "configured contact-friction DR.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume optimizer and model state from an existing run.",
@@ -118,7 +126,13 @@ def setup():
         load_run=args.load_run,
     )
 
+    if args.contact_friction_dr != "config" and args.domain_randomization != "config":
+        raise ValueError(
+            "--contact-friction-dr and --domain-randomization cannot both "
+            "override the task config"
+        )
     apply_contact_friction_dr_override(env_cfg, args.contact_friction_dr)
+    apply_domain_randomization_override(env_cfg, args.domain_randomization)
 
     # Apply CLI overrides
     if args.num_envs is not None:
