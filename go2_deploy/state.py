@@ -2,10 +2,6 @@ from enum import Enum, auto
 
 
 class State(Enum):
-    # Robot is in sport mode ("mcf" mode), lowcmd_thread is not started
-    # Can only be accessed from RECOVERY
-    DEFAULT_CTRL = auto()
-
     # Robot is in low state mode, lowcmd_thread is running
     # Can only be accessed from INTERMEDIATE
     CUSTOM_CTRL = auto()

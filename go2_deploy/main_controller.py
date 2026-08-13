@@ -251,6 +251,9 @@ class MainController:
     def _emergency_control_loop(self):
         self.lowcmd_publisher.Write(self.emergency_lowcmd)
 
+    def request_emergency_stop(self):
+        self._estop_flag = True
+
     # Switch between states -------------------------------------
 
     def switch_to_recovery(self):
@@ -313,21 +316,6 @@ class MainController:
         if not self.lowcmd_thread.IsAlive():
             self.lowcmd_thread.Start()
 
-    def switch_to_default_controller(self):
-        if self._state != State.RECOVERY:
-            print("Must be in recovery state to switch to the default controller!")
-            return
-
-        print("Switching to default controller")
-        self._state = State.DEFAULT_CTRL
-        self.motion_switcher_client.SelectMode("mcf")
-        mode = self.motion_switcher_client.CheckMode()[1]["name"]
-        while mode != "mcf":
-            print("Failed to switch to sport mode, trying again in 5s")
-            time.sleep(5)
-            self.motion_switcher_client.SelectMode("mcf")
-            mode = self.motion_switcher_client.CheckMode()[1]["name"]
-
     # Utility -----------------------------------------------------
 
     def _create_lowcmd_thread(self):
@@ -353,9 +341,6 @@ class MainController:
         print("r: recovery (return to standing position)")
         print("q: intermediate")
         print("c: custom RL policy")
-        print(
-            "d: default controller (high level control with the wireless controller)\n"
-        )
         print("i: increase kp by 10%")
         print("k: decrease kp by 10%")
         print("l: increase kd by 10%")
