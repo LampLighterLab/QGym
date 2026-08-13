@@ -3,6 +3,7 @@ import sys
 import struct
 
 from deploy_config import DeployConfig
+from go2_deploy.utility.thread import RecurrentThread
 
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 
@@ -20,22 +21,22 @@ class UnitreeRemoteController:
         self.Ly = 0
 
         # button
-        self.L1 = 0
-        self.L2 = 0
-        self.R1 = 0
-        self.R2 = 0
-        self.A = 0
-        self.B = 0
-        self.X = 0
-        self.Y = 0
-        self.Up = 0
-        self.Down = 0
-        self.Left = 0
-        self.Right = 0
-        self.Select = 0
-        self.F1 = 0
-        self.F3 = 0
-        self.Start = 0
+        self.L1 = [0, 0]
+        self.L2 = [0, 0]
+        self.R1 = [0, 0]
+        self.R2 = [0, 0]
+        self.A = [0, 0]
+        self.B = [0, 0]
+        self.X = [0, 0]
+        self.Y = [0, 0]
+        self.Up = [0, 0]
+        self.Down = [0, 0]
+        self.Left = [0, 0]
+        self.Right = [0, 0]
+        self.Select = [0, 0]
+        self.F1 = [0, 0]
+        self.F3 = [0, 0]
+        self.Start = [0, 0]
 
         self.cfg = DeployConfig()
 
@@ -45,22 +46,39 @@ class UnitreeRemoteController:
         self.yaw_vel = 0.0
 
     def parse_button(self, data1, data2):
-        self.R1 = (data1 >> 0) & 1
-        self.L1 = (data1 >> 1) & 1
-        self.Start = (data1 >> 2) & 1
-        self.Select = (data1 >> 3) & 1
-        self.R2 = (data1 >> 4) & 1
-        self.L2 = (data1 >> 5) & 1
-        self.F1 = (data1 >> 6) & 1
-        self.F3 = (data1 >> 7) & 1
-        self.A = (data2 >> 0) & 1
-        self.B = (data2 >> 1) & 1
-        self.X = (data2 >> 2) & 1
-        self.Y = (data2 >> 3) & 1
-        self.Up = (data2 >> 4) & 1
-        self.Right = (data2 >> 5) & 1
-        self.Down = (data2 >> 6) & 1
-        self.Left = (data2 >> 7) & 1
+        self.R1[1] = self.R1[0]
+        self.L1[1] = self.L1[0]
+        self.Start[1] = self.Start[0]
+        self.Select[1] = self.Select[0]
+        self.R2[1] = self.R2[0]
+        self.L2[1] = self.L2[0]
+        self.F1[1] = self.F1[0]
+        self.F3[1] = self.F3[0]
+        self.A[1] = self.A[0]
+        self.B[1] = self.B[0]
+        self.X[1] = self.X[0]
+        self.Y[1] = self.Y[0]
+        self.Up[1] = self.Up[0]
+        self.Right[1] = self.Right[0]
+        self.Down[1] = self.Down[0]
+        self.Left[1] = self.Left[0]
+
+        self.R1[0] = (data1 >> 0) & 1
+        self.L1[0] = (data1 >> 1) & 1
+        self.Start[0] = (data1 >> 2) & 1
+        self.Select[0] = (data1 >> 3) & 1
+        self.R2[0] = (data1 >> 4) & 1
+        self.L2[0] = (data1 >> 5) & 1
+        self.F1[0] = (data1 >> 6) & 1
+        self.F3[0] = (data1 >> 7) & 1
+        self.A[0] = (data2 >> 0) & 1
+        self.B[0] = (data2 >> 1) & 1
+        self.X[0] = (data2 >> 2) & 1
+        self.Y[0] = (data2 >> 3) & 1
+        self.Up[0] = (data2 >> 4) & 1
+        self.Right[0] = (data2 >> 5) & 1
+        self.Down[0] = (data2 >> 6) & 1
+        self.Left[0] = (data2 >> 7) & 1
 
     def parse_key(self, data):
         lx_offset = 4
@@ -114,6 +132,40 @@ class UnitreeRemoteController:
         # print("F3:", self.F3)
         # print("Start:", self.Start)
         # print("\n")
+
+
+class RCHandler:
+    def __init__(self, controller):
+        self.controller = controller
+        self.rc = self.controller.remote_controller
+        self.rc_thread = RecurrentThread(interval=0.002, target=self._process_input)
+        self.rc_thread.Start()
+
+    def _process_input(self):
+        if self.rc.X == [1, 0]:
+            self.controller.request_emergency_stop()
+            return
+        if self.rc.Y == [1, 0]:
+            self.controller.request_recovery()
+        elif self.rc.B == [1, 0]:
+            self.controller.request_intermediate()
+        elif self.rc.A == [1, 0]:
+            self.controller.request_custom_ctrl()
+
+        if self.rc.Up == [1, 0]:
+            self.controller.kp_mult += 0.1
+            print(f"kp increased to {self.controller.kp_mult * self.controller.cfg.kp}")
+        if self.rc.Down == [1, 0]:
+            if self.controller.kp_mult >= 0.1:
+                self.controller.kp_mult -= 0.1
+            print(f"kp decreased to {self.controller.kp_mult * self.controller.cfg.kp}")
+        if self.rc.Right == [1, 0]:
+            self.controller.kd_mult += 0.1
+            print(f"kd increased to {self.controller.kd_mult * self.controller.cfg.kd}")
+        if self.rc.Left == [1, 0]:
+            if self.controller.kd_mult >= 0.1:
+                self.controller.kd_mult -= 0.1
+            print(f"kd decreased to {self.controller.kd_mult * self.controller.cfg.kd}")
 
 
 class Custom:

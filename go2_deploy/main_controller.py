@@ -29,8 +29,12 @@ from unitree_sdk2py.utils.crc import CRC
 
 class MainController:
     def __init__(self):
-        self._state = State.RECOVERY
+        self._state = State.EMERGENCY_STOP
         self._estop_flag = False
+        self._recovery_flag = False
+        self._intermediate_flag = False
+        self._custom_ctrl_flag = False
+
         self.rl_controller = RLController()
         self.remote_controller = UnitreeRemoteController()
         self.cfg = DeployConfig()
@@ -58,9 +62,9 @@ class MainController:
         self.watchdog_thread = RecurrentThread(
             interval=0.01, target=self._watchdog_loop
         )
-        self.watchdog_thread.Start()
 
         self.switch_to_recovery()
+        self.watchdog_thread.Start()
         # At this point, buffers initialized, self._state = RECOVERY
 
     # Init --------------------------------------------------
@@ -113,10 +117,10 @@ class MainController:
         )
         self.sportmodestate_subscriber.Init(self._on_sportmodestate_msg, 10)
         self.motion_switcher_client = MotionSwitcherClient()
-        self.motion_switcher_client.SetTimeout(1.0)
+        self.motion_switcher_client.SetTimeout(5.0)
         self.motion_switcher_client.Init()
         self.sport_client = SportClient()
-        self.sport_client.SetTimeout(1.0)
+        self.sport_client.SetTimeout(5.0)
         self.sport_client.Init()
         self.crc = CRC()
 
@@ -138,14 +142,7 @@ class MainController:
         with self.last_lowstate_msg_lock:
             self.last_lowstate_msg = msg
             self.remote_controller.parse(msg.wireless_remote)
-        with self.last_command_lock:
-            self.last_command = torch.tensor(
-                [
-                    self.remote_controller.lin_vel_x,
-                    self.remote_controller.lin_vel_y,
-                    self.remote_controller.yaw_vel,
-                ]
-            )
+
         self.csv_logger.log_lowstate(t, msg, self.remote_controller)
         self.lowstate_obs_count += 1
 
@@ -173,6 +170,15 @@ class MainController:
         t = time.monotonic()
         if self.cfg.task_name == "go2trot":
             self._process_go2trot_buffers(t)
+
+        with self.last_command_lock:
+            self.last_command = torch.tensor(
+                [
+                    self.remote_controller.lin_vel_x,
+                    self.remote_controller.lin_vel_y,
+                    self.remote_controller.yaw_vel,
+                ]
+            )
 
         with (
             self.last_lowstate_msg_lock,
@@ -209,18 +215,17 @@ class MainController:
         elif self._state == State.INTERMEDIATE:
             return deploy_utility.target_pos_to_action(self, self.intermediate_pos)
         else:
-            print("Should not be using RL controller! This should not happen")
-            self._estop_flag = True
             return self.last_action[0]
 
     # Emergency stop ----------------------------------
 
     def emergency_stop(self):
+        self._estop_flag = False
+
         if self._state == State.EMERGENCY_STOP:
             self._estop_flag = False
             return
 
-        self._estop_flag = False
         self._state = State.EMERGENCY_STOP
 
         if self.lowcmd_thread.IsAlive():
@@ -231,19 +236,28 @@ class MainController:
         )
         self.motion_switcher_client.ReleaseMode()
         self.emergency_lowcmd_thread.Start()
-        print("Emergency stop activated! Recovering in 10 s")
+        print("Emergency stop activated!")
         time.sleep(5)
         self.emergency_lowcmd_thread.Wait()
         self.emergency_lowcmd_thread = None
         self._create_lowcmd_thread()
 
-        time.sleep(5)
         self.switch_to_recovery()
+        self._estop_flag = False
 
-    # Can implement checking for unsafe conditions
+    # Can implement checking for unsafe conditions automatically later
+    # This should be the only thread that calls the functions to
+    # change states
     def _watchdog_loop(self):
         if self._estop_flag:
             self.emergency_stop()
+        elif self._recovery_flag:
+            self.switch_to_recovery()
+        elif self._intermediate_flag:
+            self.switch_to_intermediate()
+        elif self._custom_ctrl_flag:
+            self.switch_to_custom_controller()
+
         t = time.monotonic()
         if t > self.last_terminal_output_time + 5.0:
             self._output_terminal_info(t)
@@ -252,19 +266,40 @@ class MainController:
     def _emergency_control_loop(self):
         self.lowcmd_publisher.Write(self.emergency_lowcmd)
 
-    def request_emergency_stop(self):
-        self._estop_flag = True
-
     # Switch between states -------------------------------------
 
+    def request_emergency_stop(self):
+        print("Estop requested")
+        self._estop_flag = True
+
+    def request_recovery(self):
+        print("recovery requested")
+        self._recovery_flag = True
+
+    def request_intermediate(self):
+        print("intermediate requested")
+        self._intermediate_flag = True
+
+    def request_custom_ctrl(self):
+        print("custom ctrl requested")
+        self._custom_ctrl_flag = True
+
     def switch_to_recovery(self):
+        self._recovery_flag = False
+
+        if self._state == State.RECOVERY:
+            print("Already in recovery state!")
+            return
+
+        self._state = State.RECOVERY
         print("Switching to recovery state")
 
         if self.lowcmd_thread.IsAlive():
             self.lowcmd_thread.Wait()
             self._create_lowcmd_thread()
 
-        self._state = State.RECOVERY
+        # Necessary to allow MSC to start up after LowCmd_ stream stops
+        time.sleep(5)
 
         self.motion_switcher_client.SelectMode("mcf")
         mode = self.motion_switcher_client.CheckMode()[1]["name"]
@@ -277,16 +312,23 @@ class MainController:
         for _ in range(10):
             error_code = self.sport_client.RecoveryStand()
             if error_code == 0:
-                print("Recovered")
+                print("call to RecoveryStand() succeeded")
                 break
             time.sleep(1)
         else:
-            print("RecoveryStand did not succeed")
+            print("RecoveryStand() did not succeed")
+        time.sleep(10)
+        print("Recovered")
 
     def switch_to_intermediate(self):
+        self._intermediate_flag = False
+
         if self._state != State.RECOVERY:
             print("Must be in recovery state to switch to intermediate")
             return
+
+        self._state = State.INTERMEDIATE
+        print("Switching to intermediate")
 
         self.intermediate_pos = (
             torch.tensor(
@@ -295,8 +337,6 @@ class MainController:
             .detach()
             .clone()
         )
-        self._state = State.INTERMEDIATE
-        print("Switching to intermediate")
 
         self.motion_switcher_client.ReleaseMode()
         mode = self.motion_switcher_client.CheckMode()[1]["name"]
@@ -309,12 +349,18 @@ class MainController:
         self.lowcmd_thread.Start()
 
     def switch_to_custom_controller(self):
-        if self._state != State.INTERMEDIATE:
-            print("Must be in intermediate state to switch to a custom controller!")
+        self._custom_ctrl_flag = False
+
+        if self._state != State.INTERMEDIATE and self._state != State.RECOVERY:
+            print(
+                "Must be in recovery or intermediate state"
+                + "to switch to custom controller!"
+            )
             return
 
-        print("Switching to custom controller")
         self._state = State.CUSTOM_CTRL
+        print("Switching to custom controller")
+
         self.motion_switcher_client.ReleaseMode()
         mode = self.motion_switcher_client.CheckMode()[1]["name"]
         while mode != "":
@@ -333,7 +379,20 @@ class MainController:
             interval=1 / self.cfg.ctrl_freq, target=self._control_loop
         )
 
+    # maybe use later. claude's suggestion
+    def _check_msc_mode(self, retries=5):
+        for _ in range(retries):
+            code, data = self.motion_switcher_client.CheckMode()
+            if code == 0 and data is not None:
+                return data.get("name")
+        time.sleep(1)
+        return None
+
     def _output_terminal_info(self, current_time):
+        print(
+            f"Logging to {self.csv_logger.run_dir} "
+            + f"({self.csv_logger.dropped_rows} rows dropped)"
+        )
         print(
             "\nlowstate obs freq = "
             + f"{self.lowstate_obs_count / (current_time - self.last_terminal_output_time):.5} Hz, "  # noqa: E501
@@ -343,18 +402,14 @@ class MainController:
             + f"{self.action_count / (current_time - self.last_terminal_output_time):.5} Hz"  # noqa: E501
         )
         print("Current mode: " + self._state.name)
+        print("Keyboard command [RC command]: meaning")
         print(
-            f"Logging to {self.csv_logger.run_dir} "
-            + f"({self.csv_logger.dropped_rows} rows dropped)"
+            "<enter> [X]: emergency stop | r [Y]: recovery | q [B]: intermediate | c [A]: custom controller"  # noqa: E501
         )
-        print("\n<enter>: emergency stop")
-        print("r: recovery (return to standing position)")
-        print("q: intermediate")
-        print("c: custom RL policy")
-        print("i: increase kp by 10%")
-        print("k: decrease kp by 10%")
-        print("l: increase kd by 10%")
-        print("j: decrease kd by 10%")
+        print(
+            "i [Up]: increase kp (by 10%) | k [Down]: decrease kp | l [Right]: increase kd | j [Left]: decrease kd\n"  # noqa: E501
+        )
+
         self.action_count = 0
         self.lowstate_obs_count = 0
         self.sportmodestate_obs_count = 0

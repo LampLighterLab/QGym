@@ -2,6 +2,7 @@ from unitree_sdk2py.core import channel
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from main_controller import MainController
 from keyboard_handler import KeyboardHandler
+from unitree_remote_controller import RCHandler
 import sys
 
 import time
@@ -24,12 +25,13 @@ def main():
         sys.argv[1],  # Name of robot network interface (terminal: `ifconfig`)
     )
     controller = MainController()  # noqa: F841
+    keyboard_handler = KeyboardHandler(controller)  # noqa: F841
+    rc_handler = RCHandler(controller)  # noqa: F841
+
     print(
         "\nConnection successful! Keep the robot away from obstacles and "
         + "always have access to the remote controller (Emergency stop = L2+B)\n"
     )
-
-    keyboard_handler = KeyboardHandler(controller)  # noqa: F841
 
     while True:
         time.sleep(1)

@@ -13,7 +13,7 @@ class State(Enum):
     EMERGENCY_STOP = auto()
 
     # After recovering, the robot is in sport mode, is standing up,
-    # lowcmd_thread is not started
+    # lowcmd_thread is not started. Unitree default controller is active
     # Can be accessed from any other state
     RECOVERY = auto()
 
