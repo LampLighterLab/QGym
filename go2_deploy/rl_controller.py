@@ -50,7 +50,7 @@ class RLController:
         self.cfg = DeployConfig()
 
     # Returns torch.tensor(12): actor outputs in radians which is the
-    # target pos subtracted from default_pos + reference traj (when applicable)
+    # target pos minus default_pos + reference traj (when applicable)
     def act(self, obs_vector):
         scale = torch.tensor(getattr(self.cfg.DeployScaling, "dof_pos_target", 1.0))
         return self.actor.act_inference(obs_vector) * scale
