@@ -3,7 +3,7 @@ import sys
 import struct
 
 from deploy_config import DeployConfig
-from go2_deploy.utility.thread import RecurrentThread
+from go2_deploy.state import State
 
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize
 
@@ -138,34 +138,57 @@ class RCHandler:
     def __init__(self, controller):
         self.controller = controller
         self.rc = self.controller.remote_controller
-        self.rc_thread = RecurrentThread(interval=0.002, target=self._process_input)
-        self.rc_thread.Start()
+        # whether to switch states upon pressing A, B, X, or Y
+        # Can disable this in recovery mode to use
+        # Unitree's default button combinations
+        self.ABXY_on = True
 
     def _process_input(self):
-        if self.rc.X == [1, 0]:
-            self.controller.request_emergency_stop()
-            return
-        if self.rc.Y == [1, 0]:
-            self.controller.request_recovery()
-        elif self.rc.B == [1, 0]:
-            self.controller.request_intermediate()
-        elif self.rc.A == [1, 0]:
-            self.controller.request_custom_ctrl()
+        if self.ABXY_on:
+            if self.rc.X == [1, 0]:
+                self.controller.request_emergency_stop()
+                return
+            # if self.rc.Y == [1, 0]:
+            #     self.controller.request_recovery()
+            elif self.rc.B == [1, 0]:
+                self.controller.request_intermediate()
+            elif self.rc.A == [1, 0]:
+                self.controller.request_custom_ctrl()
 
         if self.rc.Up == [1, 0]:
             self.controller.kp_mult += 0.1
-            print(f"kp increased to {self.controller.kp_mult * self.controller.cfg.kp}")
+            print(
+                f"kp increased to {self.controller.kp_mult * self.controller.cfg.kp:.4}"
+            )
         if self.rc.Down == [1, 0]:
             if self.controller.kp_mult >= 0.1:
                 self.controller.kp_mult -= 0.1
-            print(f"kp decreased to {self.controller.kp_mult * self.controller.cfg.kp}")
+            print(
+                f"kp decreased to {self.controller.kp_mult * self.controller.cfg.kp:.4}"
+            )
         if self.rc.Right == [1, 0]:
             self.controller.kd_mult += 0.1
-            print(f"kd increased to {self.controller.kd_mult * self.controller.cfg.kd}")
+            print(
+                f"kd increased to {self.controller.kd_mult * self.controller.cfg.kd:.4}"
+            )
         if self.rc.Left == [1, 0]:
             if self.controller.kd_mult >= 0.1:
                 self.controller.kd_mult -= 0.1
-            print(f"kd decreased to {self.controller.kd_mult * self.controller.cfg.kd}")
+            print(
+                f"kd decreased to {self.controller.kd_mult * self.controller.cfg.kd:.4}"
+            )
+
+        if self.rc.F1 == [1, 0]:
+            if self.controller._state != State.RECOVERY and self.ABXY_on:
+                print("ABXY can only be turned off in recovery mode")
+
+            self.ABXY_on = not self.ABXY_on
+            ABXY_on_text = "on" if self.ABXY_on else "off"
+            print("ABXY buttons have been turned " + ABXY_on_text)
+
+        if self.controller._state != State.RECOVERY and not self.ABXY_on:
+            self.ABXY_on = True
+            print("ABXY buttons have been turned on")
 
 
 class Custom:

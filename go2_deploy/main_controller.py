@@ -3,8 +3,8 @@ import threading
 import math
 
 from go2_deploy.state import State
-from rl_controller import RLController
-from unitree_remote_controller import UnitreeRemoteController
+from go2_deploy.rl_controller import RLController
+from go2_deploy.unitree_remote_controller import UnitreeRemoteController, RCHandler
 from deploy_config import DeployConfig
 from go2_deploy.utility import deploy_utility
 from go2_deploy.utility.csv_logger import CSVLogger
@@ -29,6 +29,7 @@ from unitree_sdk2py.utils.crc import CRC
 
 class MainController:
     def __init__(self):
+        # Flags are monitored by watchdog_thread to switch between states
         self._state = State.EMERGENCY_STOP
         self._estop_flag = False
         self._recovery_flag = False
@@ -37,6 +38,7 @@ class MainController:
 
         self.rl_controller = RLController()
         self.remote_controller = UnitreeRemoteController()
+        self.rc_handler = RCHandler(self)
         self.cfg = DeployConfig()
         self.csv_logger = CSVLogger(self)
 
@@ -45,7 +47,6 @@ class MainController:
             self.obs_vec_size += self.cfg.obs_sizes[obs]
 
         self._init_buffers()
-
         if self.cfg.task_name == "go2trot":
             self._init_go2trot_buffers()
 
@@ -53,6 +54,8 @@ class MainController:
 
         self.default_lowcmd = deploy_utility.default_lowcmd()
         self.emergency_lowcmd = deploy_utility.emergency_lowcmd()
+
+        # Change kp, kd using keyboard/RC input
         self.kp_mult = 1.0
         self.kd_mult = 1.0
 
@@ -91,7 +94,7 @@ class MainController:
         self.last_command = torch.zeros(3)
         self.last_command_lock = threading.Lock()
 
-        # Log obs freq / control freq every 5 seconds
+        # Log obs freq / control freq
         self.last_terminal_output_time = time.monotonic()
         self.lowstate_obs_count = 0
         self.sportmodestate_obs_count = 0
@@ -142,6 +145,7 @@ class MainController:
         with self.last_lowstate_msg_lock:
             self.last_lowstate_msg = msg
             self.remote_controller.parse(msg.wireless_remote)
+        self.rc_handler._process_input()
 
         self.csv_logger.log_lowstate(t, msg, self.remote_controller)
         self.lowstate_obs_count += 1
@@ -259,7 +263,7 @@ class MainController:
             self.switch_to_custom_controller()
 
         t = time.monotonic()
-        if t > self.last_terminal_output_time + 5.0:
+        if t > self.last_terminal_output_time + self.cfg.terminal_log_period:
             self._output_terminal_info(t)
 
     # publish LowCmd_ damping messages
@@ -404,7 +408,7 @@ class MainController:
         print("Current mode: " + self._state.name)
         print("Keyboard command [RC command]: meaning")
         print(
-            "<enter> [X]: emergency stop | r [Y]: recovery | q [B]: intermediate | c [A]: custom controller"  # noqa: E501
+            "<enter> [X]: emergency stop | q [B]: intermediate | c [A]: custom controller"  # noqa: E501
         )
         print(
             "i [Up]: increase kp (by 10%) | k [Down]: decrease kp | l [Right]: increase kd | j [Left]: decrease kd\n"  # noqa: E501

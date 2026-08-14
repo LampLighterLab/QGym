@@ -52,8 +52,8 @@ def _get_obs_dof_accel(main_controller, lowstate_msg):
     return dof_accel_unitree_convention[UNITREE_TO_QGYM_JOINT_IDX]
 
 
-# Clipped to actual joint range
 def _get_obs_dof_pos_target(main_controller, lowstate_msg):
+    # Clipped to actual joint range
     dof_pos_target_unclipped = main_controller.last_action[0]
     min_pos = main_controller.cfg.lower_joint_limit
     max_pos = main_controller.cfg.upper_joint_limit

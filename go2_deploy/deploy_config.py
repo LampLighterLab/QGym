@@ -71,14 +71,17 @@ class DeployConfig:
     )
     upper_joint_limit = torch.tensor(4 * [0.83, 3.49, -0.83])
 
+    # s: how often terminal should print ctrl freq, instructions
+    terminal_log_period = 2.0
+
     # Check for unsafe config
     def __init__(self):
-        if self.ctrl_freq < 50:
-            raise ValueError("ctrl_freq should be > 50")
-        if self.kp > 500:
-            raise ValueError("kp should be < 500")
-        if self.kd < 1:
-            raise ValueError("kd should be > 1")
+        if self.ctrl_freq < 20:
+            raise ValueError("ctrl_freq should be > 20")
+        if self.kp <= 0:
+            raise ValueError("kp should be > 0")
+        if self.kd <= 0:
+            raise ValueError("kd should be > 0")
         for obs in self.obs_vector:
             if obs not in self.obs_sizes:
                 raise KeyError("observation " + obs + " not supported")
