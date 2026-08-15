@@ -10,6 +10,7 @@ from tests.unit_tests.mock_backend import MockBackend
 
 # Path to the pendulum URDF used by MuJoCo backend fixtures
 from gym import GYM_ROOT_DIR
+from gym.envs.base.domain_randomization import DomainRandomizationCfg
 
 PENDULUM_URDF = os.path.join(
     GYM_ROOT_DIR, "resources", "robots", "pendulum", "urdf", "pendulum.urdf"
@@ -79,7 +80,12 @@ def _make_pendulum_cfg(sim_dt: float = 0.005) -> types.SimpleNamespace:
         terminate_after_contacts_on=[],
     )
     sim = types.SimpleNamespace(gravity=[0.0, 0.0, -9.81])
-    return types.SimpleNamespace(asset=asset, sim=sim, sim_dt=sim_dt)
+    return types.SimpleNamespace(
+        asset=asset,
+        domain_randomization=DomainRandomizationCfg(),
+        sim=sim,
+        sim_dt=sim_dt,
+    )
 
 
 # ── MockBackend fixtures ─────────────────────────────────────────────────────
@@ -207,7 +213,13 @@ def _make_mini_cheetah_cfg(sim_dt: float = 0.002) -> types.SimpleNamespace:
         dynamic_friction=1.0,
     )
     sim = types.SimpleNamespace(gravity=[0.0, 0.0, -9.81])
-    return types.SimpleNamespace(asset=asset, sim=sim, terrain=terrain, sim_dt=sim_dt)
+    return types.SimpleNamespace(
+        asset=asset,
+        domain_randomization=DomainRandomizationCfg(),
+        sim=sim,
+        terrain=terrain,
+        sim_dt=sim_dt,
+    )
 
 
 @pytest.fixture

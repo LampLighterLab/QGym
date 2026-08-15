@@ -155,6 +155,7 @@ match the local module while improving touched code deliberately.
   `try/except`, default-valued config reads that mask a missing required field,
   or automatic backend substitution. Optional dependency boundaries and
   cleanup that preserves the original exception are legitimate exceptions.
+- Prefer querying attributes directly instead of using `getattr()`, e.g. `getattr(cfg, "seed", None)` should be `cfg.seed`, and it should be allowed to fail: if there is supposed to be a default value, it should be set in the inherited default config. Other than that, the user should be forced to be responsible for setting things. This forces the user to be more aware of the implementation.
 - Preserve established public names, including historical capitalization such
   as `MuJocoCPUBackend`, unless the task is an explicit API migration.
 - Avoid wildcard imports and `eval` in new code even where legacy code uses

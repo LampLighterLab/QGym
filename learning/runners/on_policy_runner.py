@@ -223,6 +223,7 @@ class OnPolicyRunner(BaseRunner):
     def save(self):
         os.makedirs(self.log_dir, exist_ok=True)
         path = os.path.join(self.log_dir, "model_{}.pt".format(self.it))
+        temporary = path + ".tmp"
         torch.save(
             {
                 "actor_state_dict": self.alg.actor.state_dict(),
@@ -231,8 +232,9 @@ class OnPolicyRunner(BaseRunner):
                 "critic_optimizer_state_dict": self.alg.critic_optimizer.state_dict(),
                 "iter": self.it,
             },
-            path,
+            temporary,
         )
+        os.replace(temporary, path)
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path, weights_only=True, map_location=self.device)

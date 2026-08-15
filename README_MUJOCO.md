@@ -150,22 +150,33 @@ uv run --frozen scripts/train.py --task pendulum --device cpu --num_envs 256 --h
 
 # GPU training (Linux only, requires mujoco-warp)
 uv run --frozen scripts/train.py --task mini_cheetah --device cuda:0 --num_envs 4096 --headless
-
-# Deliberately disable every configured domain-randomization axis
-uv run --frozen scripts/train.py --task go2trot --device cuda:0 \
-    --domain-randomization off --num_envs 4096 --headless
-
-# Isolate contact friction for a controlled ablation
-uv run --frozen scripts/train.py --task go2trot --device cuda:0 \
-    --domain-randomization friction-only --num_envs 4096 --headless
 ```
 
-`--domain-randomization config` (the default) follows the task config. `off`
-disables every axis, while `friction-only` disables PD-gain and link-mass DR
-but retains the configured friction range. The older, narrower
-`--contact-friction-dr` option can require or disable only friction. Do not
-combine the two overrides. These choices are applied before backend setup
-because MuJoCo Warp and VSim choose their native parameter topology there.
+Training follows the task's domain-randomization config exactly. There is no
+training CLI override: physical DR changes native backend topology and should
+be an explicit, reviewable part of the environment definition. Campaign and
+evaluation tools make private config copies when they need controlled
+ablations.
+
+The config makes each axis's sampling cadence explicit:
+
+```python
+class domain_randomization:
+    class startup:
+        # One fixed physical identity per parallel environment.
+        contact_friction_range = [0.5, 1.0]
+        link_mass_scale_range = [0.9, 1.1]
+
+    class episode:
+        # Resampled for an environment whenever its episode resets.
+        stiffness_scale_range = [0.9, 1.1]
+        damping_scale_range = [0.9, 1.1]
+```
+
+Startup axes still span the configured distribution across all parallel
+environments; they simply stay fixed for the lifetime of the task. This avoids
+reapplying physical model properties during the frequent asynchronous resets.
+Set a range to `None` to disable that axis.
 
 ### Resume or play with the saved configuration
 
@@ -256,6 +267,43 @@ produce both basic and randomized evaluations. Checkpoints must match the
 current task's observation and network schema; an old incompatible checkpoint
 is rejected during loading instead of being partially evaluated.
 
+### Run the full domain-randomization campaign
+
+The resumable campaign compares DR off, friction only, PD gains only, link
+mass only, and all axes across MuJoCo CPU, MuJoCo Warp, and VSim. It trains
+three seeds through iteration 1000, preserves checkpoints at 100, 250, 500,
+750, and 1000, and evaluates intermediate and final policies in controlled
+nominal, in-range, and stress domains. This is a multi-day run on the current
+workstation.
+
+```bash
+uv run --env-file .env.vsim \
+    scripts/run_full_domain_randomization_campaign.py \
+    --output logs/dr_full_new
+```
+
+Resume a campaign after interruption with `--resume` only while its execution
+sources and protocol are unchanged. The runner rejects source or protocol drift
+rather than mixing incompatible evidence. Follow progress and view completed
+results while it runs with:
+
+```bash
+Q2_DR_CAMPAIGN_DIR=logs/dr_full_20260813_nj256 \
+    uv run --frozen marimo edit notebooks/go2_domain_randomization_campaign.py
+```
+
+The report labels reward as a training diagnostic. Policy decisions use
+physical evaluation metrics, paired seeds, nominal-regression checks, and
+worst-decile behavior.
+
+`logs/dr_full_20260813_nj256` is a deliberately closed partial campaign: all 25
+runtime cells and 23 valid training cells completed, but held-out evaluations
+were not run. Its report is useful for backend cost and trainability; it does
+not select a DR bundle or claim robustness. Warp off/seed 27 is excluded because
+its final training diagnostics became non-finite. Wrap-up changes after the
+collection invalidate that directory's execution-source hash, so start a new
+output directory instead of resuming it.
+
 ## Notes
 
 **NaN rewards at startup:** reward logging averages over completed episodes.
@@ -276,10 +324,6 @@ uv run scripts/train.py [OPTIONS]
   --load_run TEXT     Run directory below the selected experiment
   --checkpoint INT    Checkpoint iteration (default: latest)
   --original_cfg      Load environment and runner configs from the selected run
-  --contact-friction-dr {config,on,off}
-                      Follow, require, or disable configured friction DR
-  --domain-randomization {config,off,friction-only}
-                      Follow the task DR bundle, disable it, or isolate friction
   --headless          Disable GUI viewer
   --disable_wandb     Disable Weights & Biases logging (default: on)
 ```

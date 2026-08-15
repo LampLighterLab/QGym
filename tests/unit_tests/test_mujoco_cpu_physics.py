@@ -33,6 +33,7 @@ import pytest
 import torch
 
 from gym import GYM_ROOT_DIR
+from gym.envs.base.domain_randomization import DomainRandomizationCfg
 import os
 
 PENDULUM_URDF = os.path.join(
@@ -63,7 +64,12 @@ def _make_cfg(
         terminate_after_contacts_on=[],
     )
     sim = types.SimpleNamespace(gravity=[0.0, 0.0, -GRAVITY])
-    return types.SimpleNamespace(asset=asset, sim=sim, sim_dt=sim_dt)
+    return types.SimpleNamespace(
+        asset=asset,
+        domain_randomization=DomainRandomizationCfg(),
+        sim=sim,
+        sim_dt=sim_dt,
+    )
 
 
 def _stable_energy(dof_pos: torch.Tensor, dof_vel: torch.Tensor) -> torch.Tensor:

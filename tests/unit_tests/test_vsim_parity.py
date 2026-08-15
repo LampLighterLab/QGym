@@ -21,6 +21,7 @@ import pytest
 import torch
 
 from gym import GYM_ROOT_DIR
+from gym.envs.base.domain_randomization import DomainRandomizationCfg
 from tests.unit_tests.conftest import vsim_guard
 
 pytestmark = pytest.mark.vsim
@@ -43,7 +44,12 @@ def _make_cfg(damping: float) -> types.SimpleNamespace:
         terminate_after_contacts_on=[],
     )
     sim = types.SimpleNamespace(gravity=[0.0, 0.0, -GRAVITY])
-    return types.SimpleNamespace(asset=asset, sim=sim, sim_dt=SIM_DT)
+    return types.SimpleNamespace(
+        asset=asset,
+        domain_randomization=DomainRandomizationCfg(),
+        sim=sim,
+        sim_dt=SIM_DT,
+    )
 
 
 def _energy(dof_pos, dof_vel):

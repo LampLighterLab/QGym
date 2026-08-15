@@ -40,6 +40,9 @@ class LeggedRobot(BaseTask):
         self._initialize_sim()
         self._init_buffers()
         self.domain_randomizer.bind_link_masses()
+        self.domain_randomizer.randomize_startup(
+            torch.arange(self.num_envs, device=self.device)
+        )
         self.init_done = True
         self.reset()
 
@@ -267,7 +270,7 @@ class LeggedRobot(BaseTask):
         Args:
             env_ids (List[int]): Environemnt ids
         """
-        self.domain_randomizer.randomize(env_ids)
+        self.domain_randomizer.randomize_episode(env_ids)
         self._reset_state(env_ids)
 
         # * start base position shifted in X-Y plane
