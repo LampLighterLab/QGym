@@ -168,15 +168,21 @@ class domain_randomization:
         link_mass_scale_range = [0.9, 1.1]
 
     class episode:
-        # Resampled for an environment whenever its episode resets.
-        stiffness_scale_range = [0.9, 1.1]
-        damping_scale_range = [0.9, 1.1]
+        # Bound task tensors, resampled whenever an environment resets.
+        scale_ranges = {
+            "p_gains": [0.9, 1.1],
+            "d_gains": [0.9, 1.1],
+        }
 ```
 
 Startup axes still span the configured distribution across all parallel
 environments; they simply stay fixed for the lifetime of the task. This avoids
 reapplying physical model properties during the frequent asynchronous resets.
-Set a range to `None` to disable that axis.
+Set a startup range to `None`, or omit an episodic target from `scale_ranges`,
+to disable it. The task explicitly binds the allowed episodic tensors; the DR
+object then owns their nominal copies and current scales. This keeps nominal
+DR state out of the environment and prevents config strings from reaching
+arbitrary task attributes.
 
 ### Resume or play with the saved configuration
 

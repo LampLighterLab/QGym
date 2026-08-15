@@ -473,13 +473,11 @@ class LeggedRobot(BaseTask):
             gain_name = matching_gains[0]
             self.p_gains[:, actuator_index] = self.cfg.control.stiffness[gain_name]
             self.d_gains[:, actuator_index] = self.cfg.control.damping[gain_name]
-        self.nominal_p_gains = self.p_gains[:1].clone()
-        self.nominal_d_gains = self.d_gains[:1].clone()
-        self.domain_randomizer.bind_control_gains(
-            self.p_gains,
-            self.d_gains,
-            self.nominal_p_gains,
-            self.nominal_d_gains,
+        self.domain_randomizer.bind_episode_targets(
+            {
+                "p_gains": self.p_gains,
+                "d_gains": self.d_gains,
+            }
         )
         self.actuated_torque_limits = self.torque_limits.index_select(
             0, self.actuated_dof_indices

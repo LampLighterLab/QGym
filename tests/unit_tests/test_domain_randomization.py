@@ -19,8 +19,14 @@ def _domain_randomization_cfg(
             link_mass_scale_range=link_mass,
         ),
         episode=SimpleNamespace(
-            stiffness_scale_range=stiffness,
-            damping_scale_range=damping,
+            scale_ranges={
+                name: values
+                for name, values in (
+                    ("p_gains", stiffness),
+                    ("d_gains", damping),
+                )
+                if values is not None
+            }
         ),
     )
 
@@ -164,8 +170,14 @@ def _build_randomized_task(
     cfg.push_robots.toggle = False
     cfg.domain_randomization.startup.contact_friction_range = contact_friction
     cfg.domain_randomization.startup.link_mass_scale_range = link_mass
-    cfg.domain_randomization.episode.stiffness_scale_range = stiffness
-    cfg.domain_randomization.episode.damping_scale_range = damping
+    cfg.domain_randomization.episode.scale_ranges = {
+        name: values
+        for name, values in (
+            ("p_gains", stiffness),
+            ("d_gains", damping),
+        )
+        if values is not None
+    }
     task_registry.convert_frequencies_to_params(cfg, runner_cfg)
     backend = select_backend(cfg, device, backend_name)
     return MiniCheetah(cfg, device, True, backend)
@@ -200,17 +212,29 @@ def _assert_task_pd_randomization(device, backend_name="mujoco"):
         damping=(0.7, 1.3),
     )
     try:
+        p_scale = env.domain_randomizer.episode_scale("p_gains")
+        d_scale = env.domain_randomizer.episode_scale("d_gains")
+        nominal_p = env.p_gains / p_scale
+        nominal_d = env.d_gains / d_scale
         torch.testing.assert_close(
             env.p_gains,
-            env.nominal_p_gains * env.domain_randomizer.stiffness_scale,
+            nominal_p * p_scale,
         )
         torch.testing.assert_close(
             env.d_gains,
-            env.nominal_d_gains * env.domain_randomizer.damping_scale,
+            nominal_d * d_scale,
         )
         before_p = env.p_gains.clone()
         before_d = env.d_gains.clone()
         env._reset_idx(torch.tensor([1, 3], device=device))
+        torch.testing.assert_close(
+            env.p_gains,
+            nominal_p * env.domain_randomizer.episode_scale("p_gains"),
+        )
+        torch.testing.assert_close(
+            env.d_gains,
+            nominal_d * env.domain_randomizer.episode_scale("d_gains"),
+        )
         torch.testing.assert_close(env.p_gains[[0, 2]], before_p[[0, 2]])
         torch.testing.assert_close(env.d_gains[[0, 2]], before_d[[0, 2]])
         assert not torch.equal(env.p_gains[[1, 3]], before_p[[1, 3]])
@@ -496,14 +520,8 @@ def test_vsim_task_randomizes_pd_gains_without_changing_set_topology():
     try:
         assert env._backend._grp.get_num_environment_sets() == 1
         assert env._backend._grp.get_num_environments() == [4]
-        torch.testing.assert_close(
-            env.p_gains,
-            env.nominal_p_gains * env.domain_randomizer.stiffness_scale,
-        )
-        torch.testing.assert_close(
-            env.d_gains,
-            env.nominal_d_gains * env.domain_randomizer.damping_scale,
-        )
+        assert env.domain_randomizer.episode_scale("p_gains") is not None
+        assert env.domain_randomizer.episode_scale("d_gains") is not None
     finally:
         env._backend.close()
 

@@ -183,7 +183,7 @@ def crossed_parameter_samples(command_cases, low, high, width, seed):
 
 
 def configure_scale_range(env_cfg, name, values):
-    """Replace one enabled scale range before backend setup."""
+    """Replace one enabled episodic tensor range before task setup."""
     if values is None:
         return
     if get_domain_randomization_range(env_cfg, name) is None:
@@ -203,7 +203,7 @@ def apply_parameter_samples(
     randomizer = env.domain_randomizer
     num_envs = env.num_envs
     if stiffness_range is None:
-        stiffness_t = randomizer.stiffness_scale
+        stiffness_t = randomizer.episode_scale("p_gains")
         stiffness = (
             np.ones((num_envs, env.num_actuators), dtype=np.float32)
             if stiffness_t is None
@@ -214,11 +214,12 @@ def apply_parameter_samples(
             command_cases, *stiffness_range, env.num_actuators, seed + 101
         )
         stiffness_t = torch.as_tensor(stiffness, device=env.device)
-        randomizer.stiffness_scale.copy_(stiffness_t)
-        env.p_gains.copy_(env.nominal_p_gains * stiffness_t)
+        randomizer.set_episode_scale(
+            "p_gains", torch.arange(num_envs, device=env.device), stiffness_t
+        )
 
     if damping_range is None:
-        damping_t = randomizer.damping_scale
+        damping_t = randomizer.episode_scale("d_gains")
         damping = (
             np.ones((num_envs, env.num_actuators), dtype=np.float32)
             if damping_t is None
@@ -229,8 +230,9 @@ def apply_parameter_samples(
             command_cases, *damping_range, env.num_actuators, seed + 202
         )
         damping_t = torch.as_tensor(damping, device=env.device)
-        randomizer.damping_scale.copy_(damping_t)
-        env.d_gains.copy_(env.nominal_d_gains * damping_t)
+        randomizer.set_episode_scale(
+            "d_gains", torch.arange(num_envs, device=env.device), damping_t
+        )
 
     if link_mass_range is None:
         link_mass_t = randomizer.link_mass_scale
@@ -321,8 +323,8 @@ def build(
             "be explicit"
         )
     apply_domain_randomization_override(env_cfg, domain_randomization)
-    configure_scale_range(env_cfg, "stiffness_scale_range", stiffness_scale_range)
-    configure_scale_range(env_cfg, "damping_scale_range", damping_scale_range)
+    configure_scale_range(env_cfg, "p_gains", stiffness_scale_range)
+    configure_scale_range(env_cfg, "d_gains", damping_scale_range)
     configure_scale_range(env_cfg, "link_mass_scale_range", link_mass_scale_range)
     if mujoco_njmax is not None:
         env_cfg.mjspec_attributes.njmax = int(mujoco_njmax)

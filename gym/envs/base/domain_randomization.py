@@ -5,6 +5,8 @@ values, which isolates DR from task RNG and keeps parameter semantics
 independent of the selected engine.
 """
 
+import zlib
+
 import torch
 
 
@@ -20,14 +22,7 @@ STARTUP_AXES = (
     "contact_friction_range",
     "link_mass_scale_range",
 )
-EPISODE_AXES = (
-    "stiffness_scale_range",
-    "damping_scale_range",
-)
-AXIS_GROUPS = {
-    **dict.fromkeys(STARTUP_AXES, "startup"),
-    **dict.fromkeys(EPISODE_AXES, "episode"),
-}
+PD_GAIN_TARGETS = ("p_gains", "d_gains")
 
 
 class DomainRandomizationCfg:
@@ -38,39 +33,34 @@ class DomainRandomizationCfg:
         link_mass_scale_range = None
 
     class episode:
-        # Resampled independently for environments at each episode reset.
-        stiffness_scale_range = None
-        damping_scale_range = None
+        # Multiplicative ranges for task-owned tensors that are resampled at
+        # every episode reset. The task explicitly binds the allowed tensors.
+        scale_ranges = {}
 
 
 def get_domain_randomization_range(cfg, name: str):
-    """Return one axis range from its declared sampling-cadence group."""
+    """Return a startup-axis or episodic tensor scale range."""
     if name == "contact_friction_range":
         return cfg.domain_randomization.startup.contact_friction_range
     if name == "link_mass_scale_range":
         return cfg.domain_randomization.startup.link_mass_scale_range
-    if name == "stiffness_scale_range":
-        return cfg.domain_randomization.episode.stiffness_scale_range
-    if name == "damping_scale_range":
-        return cfg.domain_randomization.episode.damping_scale_range
-    raise ValueError(f"unknown domain-randomization axis {name!r}")
+    return cfg.domain_randomization.episode.scale_ranges.get(name)
 
 
 def set_domain_randomization_range(cfg, name: str, values) -> None:
-    """Set one axis range without duplicating cadence knowledge at call sites."""
+    """Set a startup-axis or episodic tensor scale range."""
     if name == "contact_friction_range":
         cfg.domain_randomization.startup.contact_friction_range = values
         return
     if name == "link_mass_scale_range":
         cfg.domain_randomization.startup.link_mass_scale_range = values
         return
-    if name == "stiffness_scale_range":
-        cfg.domain_randomization.episode.stiffness_scale_range = values
-        return
-    if name == "damping_scale_range":
-        cfg.domain_randomization.episode.damping_scale_range = values
-        return
-    raise ValueError(f"unknown domain-randomization axis {name!r}")
+    ranges = dict(cfg.domain_randomization.episode.scale_ranges)
+    if values is None:
+        ranges.pop(name, None)
+    else:
+        ranges[name] = values
+    cfg.domain_randomization.episode.scale_ranges = ranges
 
 
 def apply_domain_randomization_override(cfg, mode: str) -> None:
@@ -80,24 +70,37 @@ def apply_domain_randomization_override(cfg, mode: str) -> None:
     if mode not in DOMAIN_RANDOMIZATION_MODES:
         raise ValueError(f"unknown domain-randomization mode {mode!r}")
 
-    keep = {
+    keep_startup = {
         "off": set(),
         "friction-only": {"contact_friction_range"},
-        "pd-only": {"stiffness_scale_range", "damping_scale_range"},
+        "pd-only": set(),
         "mass-only": {"link_mass_scale_range"},
     }[mode]
-    configured = {
-        name: get_domain_randomization_range(cfg, name)
-        for name in (*STARTUP_AXES, *EPISODE_AXES)
+    keep_episode = set(PD_GAIN_TARGETS) if mode == "pd-only" else set()
+    configured_startup = {
+        name: get_domain_randomization_range(cfg, name) for name in STARTUP_AXES
     }
-    missing = sorted(name for name in keep if configured[name] is None)
+    configured_episode = dict(cfg.domain_randomization.episode.scale_ranges)
+    missing = sorted(
+        name
+        for name in (*keep_startup, *keep_episode)
+        if (
+            configured_startup.get(name) is None
+            and configured_episode.get(name) is None
+        )
+    )
     if missing:
         raise ValueError(
             f"{mode} domain randomization requires configured ranges for {missing}"
         )
-    for name in configured:
-        if name not in keep:
+    for name in configured_startup:
+        if name not in keep_startup:
             set_domain_randomization_range(cfg, name, None)
+    cfg.domain_randomization.episode.scale_ranges = {
+        name: values
+        for name, values in configured_episode.items()
+        if name in keep_episode
+    }
 
 
 def _configured_range(cfg, name: str) -> tuple[float, float] | None:
@@ -152,18 +155,24 @@ class DomainRandomizer:
         self._backend = backend
         self._device = device
         self._contact_friction_range = contact_friction_range(cfg)
-        self._stiffness_scale_range = scale_range(cfg, "stiffness_scale_range")
-        self._damping_scale_range = scale_range(cfg, "damping_scale_range")
         self._link_mass_scale_range = link_mass_scale_range(cfg)
+        self._episode_scale_ranges = {}
+        for name in cfg.domain_randomization.episode.scale_ranges:
+            values = scale_range(cfg, name)
+            if values is None:
+                raise ValueError(
+                    f"episodic DR target {name!r} has no range; omit it to disable it"
+                )
+            self._episode_scale_ranges[name] = values
 
         ranges = {
             "contact_friction": self._contact_friction_range,
-            "stiffness": self._stiffness_scale_range,
-            "damping": self._damping_scale_range,
             "link_mass": self._link_mass_scale_range,
         }
         self._generators = {}
-        if any(values is not None for values in ranges.values()):
+        if any(values is not None for values in ranges.values()) or any(
+            values is not None for values in self._episode_scale_ranges.values()
+        ):
             seed = cfg.seed
             if seed < 0:
                 raise ValueError(
@@ -175,36 +184,71 @@ class DomainRandomizer:
                     generator = torch.Generator(device=device)
                     generator.manual_seed(seed + offset)
                     self._generators[name] = generator
+            for name, values in self._episode_scale_ranges.items():
+                if values is not None:
+                    generator = torch.Generator(device=device)
+                    offset = zlib.crc32(f"episode:{name}".encode())
+                    generator.manual_seed(seed + offset)
+                    self._generators[name] = generator
 
-        self.stiffness_scale = None
-        self.damping_scale = None
         self.link_mass_scale = None
-        self._p_gains = None
-        self._d_gains = None
-        self._nominal_p_gains = None
-        self._nominal_d_gains = None
+        self._episode_targets = {}
+        self._episode_nominals = {}
+        self._episode_scales = {}
 
     def bind_link_masses(self) -> None:
         """Allocate the persistent canonical scale tensor after backend setup."""
         if self._link_mass_scale_range is not None:
             self.link_mass_scale = torch.ones_like(self._backend.link_mass)
 
-    def bind_control_gains(
+    def bind_episode_targets(self, targets: dict[str, torch.Tensor]) -> None:
+        """Bind allowed task tensors and retain nominals for configured targets."""
+        missing = self._episode_scale_ranges.keys() - targets.keys()
+        if missing:
+            raise ValueError(f"unbound episodic DR targets: {sorted(missing)}")
+        num_envs = self._backend.contact_friction.shape[0]
+        for name in self._episode_scale_ranges:
+            target = targets[name]
+            if not torch.is_floating_point(target):
+                raise TypeError(f"episodic DR target {name!r} must be floating point")
+            if target.ndim == 0 or target.shape[0] != num_envs:
+                raise ValueError(
+                    f"episodic DR target {name!r} must start with [{num_envs}], "
+                    f"got {list(target.shape)}"
+                )
+            if target.device != torch.device(self._device):
+                raise ValueError(
+                    f"episodic DR target {name!r} is on {target.device}, "
+                    f"expected {self._device}"
+                )
+            self._episode_targets[name] = target
+            self._episode_nominals[name] = target.clone()
+            self._episode_scales[name] = torch.ones_like(target)
+
+    def episode_scale(self, name: str) -> torch.Tensor | None:
+        """Return the current scale tensor, or ``None`` when not configured."""
+        return self._episode_scales.get(name)
+
+    def set_episode_scale(
         self,
-        p_gains: torch.Tensor,
-        d_gains: torch.Tensor,
-        nominal_p_gains: torch.Tensor,
-        nominal_d_gains: torch.Tensor,
+        name: str,
+        env_ids: torch.Tensor,
+        scales: torch.Tensor,
     ) -> None:
-        """Bind the task's persistent per-environment PD gain tensors."""
-        self._p_gains = p_gains
-        self._d_gains = d_gains
-        self._nominal_p_gains = nominal_p_gains
-        self._nominal_d_gains = nominal_d_gains
-        if self._stiffness_scale_range is not None:
-            self.stiffness_scale = torch.ones_like(p_gains)
-        if self._damping_scale_range is not None:
-            self.damping_scale = torch.ones_like(d_gains)
+        """Apply explicit scales relative to the retained nominal tensor."""
+        if name not in self._episode_targets:
+            raise ValueError(f"episodic DR target {name!r} is not configured and bound")
+        env_ids = self._env_ids(env_ids)
+        target = self._episode_targets[name]
+        scales = torch.as_tensor(scales, dtype=target.dtype, device=target.device)
+        expected_shape = (env_ids.numel(), *target.shape[1:])
+        if scales.shape != expected_shape:
+            raise ValueError(
+                f"episodic DR scale for {name!r} must have shape "
+                f"{expected_shape}, got {tuple(scales.shape)}"
+            )
+        self._episode_scales[name][env_ids] = scales
+        target[env_ids] = self._episode_nominals[name][env_ids] * scales
 
     def _sample(
         self,
@@ -252,28 +296,17 @@ class DomainRandomizer:
             self._backend.set_link_mass_scale(env_ids, scales)
 
     def randomize_episode(self, env_ids: torch.Tensor) -> None:
-        """Resample inexpensive control parameters for resetting environments."""
+        """Resample configured task tensors for resetting environments."""
         env_ids = self._env_ids(env_ids)
         if env_ids.numel() == 0:
             return
-        if self._stiffness_scale_range is not None:
-            if self._p_gains is None:
-                raise RuntimeError("stiffness DR requires bound control gains")
+        for name, values in self._episode_scale_ranges.items():
+            if name not in self._episode_targets:
+                raise RuntimeError(f"episodic DR target {name!r} is not bound")
+            target = self._episode_targets[name]
             scales = self._sample(
-                self._stiffness_scale_range,
-                (env_ids.numel(), self._p_gains.shape[1]),
-                self._generators["stiffness"],
+                values,
+                (env_ids.numel(), *target.shape[1:]),
+                self._generators[name],
             )
-            self.stiffness_scale[env_ids] = scales
-            self._p_gains[env_ids] = self._nominal_p_gains * scales
-
-        if self._damping_scale_range is not None:
-            if self._d_gains is None:
-                raise RuntimeError("damping DR requires bound control gains")
-            scales = self._sample(
-                self._damping_scale_range,
-                (env_ids.numel(), self._d_gains.shape[1]),
-                self._generators["damping"],
-            )
-            self.damping_scale[env_ids] = scales
-            self._d_gains[env_ids] = self._nominal_d_gains * scales
+            self.set_episode_scale(name, env_ids, scales)
