@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from gym import GYM_ROOT_DIR
+from gym.envs.base.domain_randomization import DomainRandomizationCfg
 import os
 
 pytestmark = pytest.mark.warp
@@ -37,7 +38,12 @@ def _make_cfg():
         terminate_after_contacts_on=[],
     )
     sim = types.SimpleNamespace(gravity=[0.0, 0.0, -9.81])
-    return types.SimpleNamespace(asset=asset, sim=sim, sim_dt=SIM_DT)
+    return types.SimpleNamespace(
+        asset=asset,
+        domain_randomization=DomainRandomizationCfg(),
+        sim=sim,
+        sim_dt=SIM_DT,
+    )
 
 
 def _random_ics(seed=42):

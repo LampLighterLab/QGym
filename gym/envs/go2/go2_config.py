@@ -104,10 +104,13 @@ class Go2Cfg(LeggedRobotCfg):
         push_box_dims = [0.3, 0.1, 0.1]  # x,y,z [m]
 
     class domain_randomization(LeggedRobotCfg.domain_randomization):
-        contact_friction_range = [0.5, 1.0]
-        stiffness_scale_range = [0.9, 1.1]
-        damping_scale_range = [0.9, 1.1]
-        link_mass_scale_range = [0.9, 1.1]
+        class startup(LeggedRobotCfg.domain_randomization.startup):
+            contact_friction_range = [0.5, 1.0]
+            link_mass_scale_range = [0.9, 1.1]
+
+        class episode(LeggedRobotCfg.domain_randomization.episode):
+            stiffness_scale_range = [0.9, 1.1]
+            damping_scale_range = [0.9, 1.1]
 
     class asset(LeggedRobotCfg.asset):
         file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
@@ -147,7 +150,10 @@ class Go2Cfg(LeggedRobotCfg):
         commands = [3, 1, 3]
 
     class mjspec_attributes:
-        njmax = 130
+        # MuJoCo Warp allocates a fixed constraint buffer from this value and
+        # truncates constraints on overflow. Fallen/contact-rich poses reached
+        # 200 rows during training, so retain explicit headroom.
+        njmax = 256
 
     class mjspec_option_attributes:
         ccd_iterations = 50

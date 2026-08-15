@@ -8,32 +8,100 @@ independent of the selected engine.
 import torch
 
 
+DOMAIN_RANDOMIZATION_MODES = (
+    "config",
+    "off",
+    "friction-only",
+    "pd-only",
+    "mass-only",
+)
+
+STARTUP_AXES = (
+    "contact_friction_range",
+    "link_mass_scale_range",
+)
+EPISODE_AXES = (
+    "stiffness_scale_range",
+    "damping_scale_range",
+)
+AXIS_GROUPS = {
+    **dict.fromkeys(STARTUP_AXES, "startup"),
+    **dict.fromkeys(EPISODE_AXES, "episode"),
+}
+
+
+class DomainRandomizationCfg:
+    class startup:
+        # Sampled once for every environment during task construction.
+        contact_friction_range = None
+        # Mass and diagonal inertia are scaled together for each robot link.
+        link_mass_scale_range = None
+
+    class episode:
+        # Resampled independently for environments at each episode reset.
+        stiffness_scale_range = None
+        damping_scale_range = None
+
+
+def get_domain_randomization_range(cfg, name: str):
+    """Return one axis range from its declared sampling-cadence group."""
+    if name == "contact_friction_range":
+        return cfg.domain_randomization.startup.contact_friction_range
+    if name == "link_mass_scale_range":
+        return cfg.domain_randomization.startup.link_mass_scale_range
+    if name == "stiffness_scale_range":
+        return cfg.domain_randomization.episode.stiffness_scale_range
+    if name == "damping_scale_range":
+        return cfg.domain_randomization.episode.damping_scale_range
+    raise ValueError(f"unknown domain-randomization axis {name!r}")
+
+
+def set_domain_randomization_range(cfg, name: str, values) -> None:
+    """Set one axis range without duplicating cadence knowledge at call sites."""
+    if name == "contact_friction_range":
+        cfg.domain_randomization.startup.contact_friction_range = values
+        return
+    if name == "link_mass_scale_range":
+        cfg.domain_randomization.startup.link_mass_scale_range = values
+        return
+    if name == "stiffness_scale_range":
+        cfg.domain_randomization.episode.stiffness_scale_range = values
+        return
+    if name == "damping_scale_range":
+        cfg.domain_randomization.episode.damping_scale_range = values
+        return
+    raise ValueError(f"unknown domain-randomization axis {name!r}")
+
+
 def apply_domain_randomization_override(cfg, mode: str) -> None:
-    """Select the configured bundle, no DR, or the friction-only ablation."""
+    """Select a deliberate subset of the configured randomization axes."""
     if mode == "config":
         return
-    settings = getattr(cfg, "domain_randomization", None)
-    if settings is None:
-        raise ValueError("domain-randomization override requires a config block")
-    if mode not in ("off", "friction-only"):
+    if mode not in DOMAIN_RANDOMIZATION_MODES:
         raise ValueError(f"unknown domain-randomization mode {mode!r}")
-    if mode == "friction-only" and settings.contact_friction_range is None:
+
+    keep = {
+        "off": set(),
+        "friction-only": {"contact_friction_range"},
+        "pd-only": {"stiffness_scale_range", "damping_scale_range"},
+        "mass-only": {"link_mass_scale_range"},
+    }[mode]
+    configured = {
+        name: get_domain_randomization_range(cfg, name)
+        for name in (*STARTUP_AXES, *EPISODE_AXES)
+    }
+    missing = sorted(name for name in keep if configured[name] is None)
+    if missing:
         raise ValueError(
-            "friction-only domain randomization requires a configured "
-            "contact_friction_range"
+            f"{mode} domain randomization requires configured ranges for {missing}"
         )
-    if mode == "off":
-        settings.contact_friction_range = None
-    settings.stiffness_scale_range = None
-    settings.damping_scale_range = None
-    settings.link_mass_scale_range = None
+    for name in configured:
+        if name not in keep:
+            set_domain_randomization_range(cfg, name, None)
 
 
 def _configured_range(cfg, name: str) -> tuple[float, float] | None:
-    settings = getattr(cfg, "domain_randomization", None)
-    if settings is None:
-        return None
-    values = getattr(settings, name, None)
+    values = get_domain_randomization_range(cfg, name)
     if values is None:
         return None
     low, high = map(float, values)
@@ -96,8 +164,8 @@ class DomainRandomizer:
         }
         self._generators = {}
         if any(values is not None for values in ranges.values()):
-            seed = getattr(cfg, "seed", None)
-            if seed is None or seed < 0:
+            seed = cfg.seed
+            if seed < 0:
                 raise ValueError(
                     "enabled domain randomization requires a resolved "
                     "non-negative cfg.seed"
@@ -156,11 +224,12 @@ class DomainRandomizer:
         """Current applied coefficient for every environment."""
         return self._backend.contact_friction
 
-    def randomize(self, env_ids: torch.Tensor) -> None:
-        """Resample enabled parameters for exactly ``env_ids``."""
-        env_ids = torch.as_tensor(
-            env_ids, dtype=torch.long, device=self._device
-        ).flatten()
+    def _env_ids(self, env_ids: torch.Tensor) -> torch.Tensor:
+        return torch.as_tensor(env_ids, dtype=torch.long, device=self._device).flatten()
+
+    def randomize_startup(self, env_ids: torch.Tensor) -> None:
+        """Sample physical parameters once, before the first episode reset."""
+        env_ids = self._env_ids(env_ids)
         if env_ids.numel() == 0:
             return
         if self._contact_friction_range is not None:
@@ -171,6 +240,22 @@ class DomainRandomizer:
             )
             self._backend.set_contact_friction(env_ids, values)
 
+        if self._link_mass_scale_range is not None:
+            if self.link_mass_scale is None:
+                raise RuntimeError("link-mass DR requires bound backend masses")
+            scales = self._sample(
+                self._link_mass_scale_range,
+                (env_ids.numel(), self.link_mass_scale.shape[1]),
+                self._generators["link_mass"],
+            )
+            self.link_mass_scale[env_ids] = scales
+            self._backend.set_link_mass_scale(env_ids, scales)
+
+    def randomize_episode(self, env_ids: torch.Tensor) -> None:
+        """Resample inexpensive control parameters for resetting environments."""
+        env_ids = self._env_ids(env_ids)
+        if env_ids.numel() == 0:
+            return
         if self._stiffness_scale_range is not None:
             if self._p_gains is None:
                 raise RuntimeError("stiffness DR requires bound control gains")
@@ -192,14 +277,3 @@ class DomainRandomizer:
             )
             self.damping_scale[env_ids] = scales
             self._d_gains[env_ids] = self._nominal_d_gains * scales
-
-        if self._link_mass_scale_range is not None:
-            if self.link_mass_scale is None:
-                raise RuntimeError("link-mass DR requires bound backend masses")
-            scales = self._sample(
-                self._link_mass_scale_range,
-                (env_ids.numel(), self.link_mass_scale.shape[1]),
-                self._generators["link_mass"],
-            )
-            self.link_mass_scale[env_ids] = scales
-            self._backend.set_link_mass_scale(env_ids, scales)

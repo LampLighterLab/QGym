@@ -31,6 +31,7 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 from .base_config import BaseConfig
+from .domain_randomization import DomainRandomizationCfg
 
 
 class LeggedRobotCfg(BaseConfig):
@@ -60,14 +61,8 @@ class LeggedRobotCfg(BaseConfig):
         max_push_vel_xy = 0.05
         push_box_dims = [0.2, 0.2, 0.2]  # x,y,z [m]
 
-    class domain_randomization:
-        # Sampled independently for resetting environments at episode reset.
-        # None disables the parameter.
-        contact_friction_range = None
-        stiffness_scale_range = None
-        damping_scale_range = None
-        # Mass and diagonal inertia are scaled together for each robot link.
-        link_mass_scale_range = None
+    class domain_randomization(DomainRandomizationCfg):
+        pass
 
     class init_state:
         # * target state when action = 0, also reset positions for basic mode

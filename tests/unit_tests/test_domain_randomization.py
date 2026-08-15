@@ -10,6 +10,21 @@ from gym import GYM_ROOT_DIR
 from tests.unit_tests.conftest import vsim_guard
 
 
+def _domain_randomization_cfg(
+    *, contact_friction=None, stiffness=None, damping=None, link_mass=None
+):
+    return SimpleNamespace(
+        startup=SimpleNamespace(
+            contact_friction_range=contact_friction,
+            link_mass_scale_range=link_mass,
+        ),
+        episode=SimpleNamespace(
+            stiffness_scale_range=stiffness,
+            damping_scale_range=damping,
+        ),
+    )
+
+
 def _friction_cfg():
     return SimpleNamespace(
         seed=11,
@@ -34,7 +49,7 @@ def _friction_cfg():
             dynamic_friction=1.0,
             restitution=0.0,
         ),
-        domain_randomization=SimpleNamespace(contact_friction_range=[0.2, 1.0]),
+        domain_randomization=_domain_randomization_cfg(contact_friction=[0.2, 1.0]),
         sim=SimpleNamespace(gravity=[5.0, 0.0, -9.81]),
         sim_dt=0.002,
     )
@@ -56,9 +71,8 @@ def _link_mass_cfg():
             pos=[0.0, 0.0, 0.0],
             rot=[0.0, 0.0, 0.0, 1.0],
         ),
-        domain_randomization=SimpleNamespace(
-            contact_friction_range=None,
-            link_mass_scale_range=[0.5, 2.0],
+        domain_randomization=_domain_randomization_cfg(
+            link_mass=[0.5, 2.0],
         ),
         sim=SimpleNamespace(gravity=[0.0, 0.0, -9.81]),
         sim_dt=0.005,
@@ -148,16 +162,16 @@ def _build_randomized_task(
     cfg.env.num_envs = 4
     cfg.seed = 17
     cfg.push_robots.toggle = False
-    cfg.domain_randomization.contact_friction_range = contact_friction
-    cfg.domain_randomization.stiffness_scale_range = stiffness
-    cfg.domain_randomization.damping_scale_range = damping
-    cfg.domain_randomization.link_mass_scale_range = link_mass
+    cfg.domain_randomization.startup.contact_friction_range = contact_friction
+    cfg.domain_randomization.startup.link_mass_scale_range = link_mass
+    cfg.domain_randomization.episode.stiffness_scale_range = stiffness
+    cfg.domain_randomization.episode.damping_scale_range = damping
     task_registry.convert_frequencies_to_params(cfg, runner_cfg)
     backend = select_backend(cfg, device, backend_name)
     return MiniCheetah(cfg, device, True, backend)
 
 
-def _assert_task_reset_randomization(device, backend_name="mujoco"):
+def _assert_task_startup_friction_randomization(device, backend_name="mujoco"):
     env = _build_randomized_task(device, backend_name)
     try:
         generator = torch.Generator(device=device).manual_seed(17)
@@ -170,8 +184,6 @@ def _assert_task_reset_randomization(device, backend_name="mujoco"):
         )
 
         env._reset_idx(torch.tensor([1, 3], device=device))
-        expected_reset = 0.5 + 0.5 * torch.rand(2, generator=generator, device=device)
-        expected_initial[[1, 3]] = expected_reset
         torch.testing.assert_close(
             env.domain_randomizer.contact_friction, expected_initial
         )
@@ -227,11 +239,8 @@ def _assert_task_link_mass_randomization(device, backend_name="mujoco"):
         before_mass = env._backend.link_mass.clone()
         before_inertia = env._backend.link_inertia.clone()
         env._reset_idx(torch.tensor([1, 3], device=device))
-        torch.testing.assert_close(env._backend.link_mass[[0, 2]], before_mass[[0, 2]])
-        torch.testing.assert_close(
-            env._backend.link_inertia[[0, 2]], before_inertia[[0, 2]]
-        )
-        assert not torch.equal(env._backend.link_mass[[1, 3]], before_mass[[1, 3]])
+        torch.testing.assert_close(env._backend.link_mass, before_mass)
+        torch.testing.assert_close(env._backend.link_inertia, before_inertia)
     finally:
         env._backend.close()
 
@@ -296,7 +305,7 @@ def test_mujoco_cpu_without_dr_rejects_friction_updates():
     from gym.envs.base.mujoco_cpu_backend import MuJocoCPUBackend
 
     cfg = _friction_cfg()
-    cfg.domain_randomization.contact_friction_range = None
+    cfg.domain_randomization.startup.contact_friction_range = None
     backend = MuJocoCPUBackend()
     backend.setup(cfg, num_envs=2, device="cpu", task=None)
     try:
@@ -355,8 +364,8 @@ def test_mujoco_cpu_friction_has_predicted_physical_effect():
         backend.close()
 
 
-def test_mujoco_cpu_task_randomizes_only_reset_environments():
-    _assert_task_reset_randomization("cpu")
+def test_mujoco_cpu_task_randomizes_friction_only_at_startup():
+    _assert_task_startup_friction_randomization("cpu")
 
 
 def test_mujoco_cpu_task_randomizes_pd_gains_in_common_control_path():
@@ -378,7 +387,7 @@ def test_mujoco_cpu_link_mass_and_inertia_change_acceleration():
         backend.close()
 
 
-def test_mujoco_cpu_task_randomizes_link_mass_on_partial_reset():
+def test_mujoco_cpu_task_randomizes_link_mass_only_at_startup():
     _assert_task_link_mass_randomization("cpu")
 
 
@@ -402,10 +411,10 @@ def test_mujoco_warp_applies_and_consumes_friction_per_world():
 
 
 @pytest.mark.warp
-def test_mujoco_warp_task_randomizes_only_reset_environments():
+def test_mujoco_warp_task_randomizes_friction_only_at_startup():
     if not torch.cuda.is_available():
         pytest.fail("Warp tests requested but CUDA is not available", pytrace=False)
-    _assert_task_reset_randomization("cuda:0")
+    _assert_task_startup_friction_randomization("cuda:0")
 
 
 @pytest.mark.warp
@@ -435,7 +444,7 @@ def test_mujoco_warp_link_mass_and_inertia_change_acceleration():
 
 
 @pytest.mark.warp
-def test_mujoco_warp_task_randomizes_link_mass_on_partial_reset():
+def test_mujoco_warp_task_randomizes_link_mass_only_at_startup():
     if not torch.cuda.is_available():
         pytest.fail("Warp tests requested but CUDA is not available", pytrace=False)
     _assert_task_link_mass_randomization("cuda:0")
@@ -469,9 +478,9 @@ def test_vsim_applies_and_consumes_friction_per_environment_set():
 
 
 @pytest.mark.vsim
-def test_vsim_task_randomizes_only_reset_environments():
+def test_vsim_task_randomizes_friction_only_at_startup():
     vsim_guard()
-    _assert_task_reset_randomization("cuda:0", "vsim")
+    _assert_task_startup_friction_randomization("cuda:0", "vsim")
 
 
 @pytest.mark.vsim
@@ -527,6 +536,6 @@ def test_vsim_link_mass_and_inertia_change_acceleration():
 
 
 @pytest.mark.vsim
-def test_vsim_task_randomizes_link_mass_on_partial_reset():
+def test_vsim_task_randomizes_link_mass_only_at_startup():
     vsim_guard()
     _assert_task_link_mass_randomization("cuda:0", "vsim")
