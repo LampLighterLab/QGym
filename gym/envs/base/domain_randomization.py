@@ -149,8 +149,6 @@ def link_mass_scale_range(cfg) -> tuple[float, float] | None:
 
 
 class DomainRandomizer:
-    """Sample enabled domain parameters and apply them through ``SimBackend``."""
-
     def __init__(self, cfg, backend, device: str) -> None:
         self._backend = backend
         self._device = device
@@ -197,30 +195,12 @@ class DomainRandomizer:
         self._episode_scales = {}
 
     def bind_link_masses(self) -> None:
-        """Allocate the persistent canonical scale tensor after backend setup."""
         if self._link_mass_scale_range is not None:
             self.link_mass_scale = torch.ones_like(self._backend.link_mass)
 
     def bind_episode_targets(self, targets: dict[str, torch.Tensor]) -> None:
-        """Bind allowed task tensors and retain nominals for configured targets."""
-        missing = self._episode_scale_ranges.keys() - targets.keys()
-        if missing:
-            raise ValueError(f"unbound episodic DR targets: {sorted(missing)}")
-        num_envs = self._backend.contact_friction.shape[0]
         for name in self._episode_scale_ranges:
             target = targets[name]
-            if not torch.is_floating_point(target):
-                raise TypeError(f"episodic DR target {name!r} must be floating point")
-            if target.ndim == 0 or target.shape[0] != num_envs:
-                raise ValueError(
-                    f"episodic DR target {name!r} must start with [{num_envs}], "
-                    f"got {list(target.shape)}"
-                )
-            if target.device != torch.device(self._device):
-                raise ValueError(
-                    f"episodic DR target {name!r} is on {target.device}, "
-                    f"expected {self._device}"
-                )
             self._episode_targets[name] = target
             self._episode_nominals[name] = target.clone()
             self._episode_scales[name] = torch.ones_like(target)
@@ -235,18 +215,7 @@ class DomainRandomizer:
         env_ids: torch.Tensor,
         scales: torch.Tensor,
     ) -> None:
-        """Apply explicit scales relative to the retained nominal tensor."""
-        if name not in self._episode_targets:
-            raise ValueError(f"episodic DR target {name!r} is not configured and bound")
-        env_ids = self._env_ids(env_ids)
         target = self._episode_targets[name]
-        scales = torch.as_tensor(scales, dtype=target.dtype, device=target.device)
-        expected_shape = (env_ids.numel(), *target.shape[1:])
-        if scales.shape != expected_shape:
-            raise ValueError(
-                f"episodic DR scale for {name!r} must have shape "
-                f"{expected_shape}, got {tuple(scales.shape)}"
-            )
         self._episode_scales[name][env_ids] = scales
         target[env_ids] = self._episode_nominals[name][env_ids] * scales
 
@@ -265,15 +234,10 @@ class DomainRandomizer:
 
     @property
     def contact_friction(self) -> torch.Tensor:
-        """Current applied coefficient for every environment."""
         return self._backend.contact_friction
-
-    def _env_ids(self, env_ids: torch.Tensor) -> torch.Tensor:
-        return torch.as_tensor(env_ids, dtype=torch.long, device=self._device).flatten()
 
     def randomize_startup(self, env_ids: torch.Tensor) -> None:
         """Sample physical parameters once, before the first episode reset."""
-        env_ids = self._env_ids(env_ids)
         if env_ids.numel() == 0:
             return
         if self._contact_friction_range is not None:
@@ -285,8 +249,6 @@ class DomainRandomizer:
             self._backend.set_contact_friction(env_ids, values)
 
         if self._link_mass_scale_range is not None:
-            if self.link_mass_scale is None:
-                raise RuntimeError("link-mass DR requires bound backend masses")
             scales = self._sample(
                 self._link_mass_scale_range,
                 (env_ids.numel(), self.link_mass_scale.shape[1]),
@@ -297,12 +259,9 @@ class DomainRandomizer:
 
     def randomize_episode(self, env_ids: torch.Tensor) -> None:
         """Resample configured task tensors for resetting environments."""
-        env_ids = self._env_ids(env_ids)
         if env_ids.numel() == 0:
             return
         for name, values in self._episode_scale_ranges.items():
-            if name not in self._episode_targets:
-                raise RuntimeError(f"episodic DR target {name!r} is not bound")
             target = self._episode_targets[name]
             scales = self._sample(
                 values,
