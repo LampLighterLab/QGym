@@ -109,8 +109,10 @@ class Go2Cfg(LeggedRobotCfg):
             link_mass_scale_range = [0.9, 1.1]
 
         class episode(LeggedRobotCfg.domain_randomization.episode):
-            stiffness_scale_range = [0.9, 1.1]
-            damping_scale_range = [0.9, 1.1]
+            scale_ranges = {
+                "p_gains": [0.9, 1.1],
+                "d_gains": [0.9, 1.1],
+            }
 
     class asset(LeggedRobotCfg.asset):
         file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
