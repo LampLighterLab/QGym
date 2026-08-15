@@ -66,6 +66,11 @@ Read the relevant current section of `MIGRATION_PLAN.md` for parity decisions.
   axes, and close its process singleton cleanly.
 - Per-engine config pass-throughs must be explicit, validated, and covered by
   a test showing that the engine actually consumes them.
+- Validate values at real boundaries: user configuration, assets, and native
+  engine interfaces. When the same internal path has just constructed a tensor
+  with the required shape, dtype, and device, use it directly. Do not recast it
+  or immediately re-check those properties; let the consuming operation expose
+  a broken internal invariant.
 
 ## Validate
 
