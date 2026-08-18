@@ -149,7 +149,6 @@ class Go2TrotCfg(LeggedRobotCfg):
         joint_damping = 0.01
         rotor_inertia = [0.002268, 0.002268, 0.005484] * 4
         total_mass = 16.087  # sum of nominal URDF link masses [kg]
-        average_inertia_tensor_if_unphysical = True
         collapse_fixed_joints = False
 
         class robot_layout:

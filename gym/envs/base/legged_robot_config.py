@@ -115,7 +115,6 @@ class LeggedRobotCfg(BaseConfig):
         fix_base_link = False
         rotor_inertia = 0.0
         joint_damping = 0.0
-        average_inertia_tensor_if_unphysical = True
         collapse_fixed_joints = False
 
     class reward_settings:
