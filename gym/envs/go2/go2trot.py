@@ -3,9 +3,6 @@ import torch
 from gym.utils.sampling import torch_rand_float
 
 from gym.envs.base.legged_robot import LeggedRobot
-# from learning.utils.logger.SaveStates import (
-#     init_env_log_buffers,
-# )
 
 
 class Go2Trot(LeggedRobot):

@@ -1,9 +1,6 @@
 import torch
 
 from gym.envs.base.legged_robot import LeggedRobot
-# from learning.utils.logger.SaveStates import (
-#     init_env_log_buffers,
-# )
 
 
 class Go2(LeggedRobot):

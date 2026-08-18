@@ -12,10 +12,6 @@ from gym.utils.torch_quat import (
     to_torch,
 )
 
-from learning.utils.logger.SaveStates import (
-    init_env_log_buffers,
-)
-
 
 class LeggedRobot(BaseTask):
     def __init__(self, cfg, device, headless, backend):
@@ -36,11 +32,6 @@ class LeggedRobot(BaseTask):
         self._init_buffers()
         self.init_done = True
         self.reset()
-
-        if cfg.plotting.plot_state_histograms:
-            init_env_log_buffers(
-                self, self.cfg.plotting.states_to_log, num_timesteps=500
-            )
 
     def step(self):
         self._reset_buffers()
