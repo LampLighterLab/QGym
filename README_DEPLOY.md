@@ -2,6 +2,8 @@
 
 ## Setup
 
+### Install required packages
+
 To deploy a custom policy, you will need to get `unitree-sdk2py` and `cyclonedds`. First make sure the QGym virtual environment is correctly set up.
 
 Install `cyclonedds` version 0.10.2 [adapted from these instructions](https://pypi.org/project/cyclonedds/):
@@ -23,6 +25,16 @@ Install `unitree-sdk2py`:
     - `export CYCLONEDDS_HOME=<path to your cyclonedds directory>/cyclonedds/install`
     - `uv pip install -e .`
 
+### Set up ethernet connection
+
+Instructions are for Linux (Ubuntu)
+- Connect an ethernet cable to the robot and to your device.
+- Go to Settings -> Network -> click the settings icon under Wired -> IPv4
+- Switch IPv4 Method to Manual
+- Under Addresses, in the first row, type `192.168.123.99` under Addresses, and `255.255.255.0` under Netmask
+- Click Apply
+- Turn on the connection under Wired
+
 ## Configure deployment
 
 Settings can be configured in `go2_deploy/deploy_config.py`. Options include:
@@ -37,7 +49,6 @@ Settings can be configured in `go2_deploy/deploy_config.py`. Options include:
 If anything goes wrong, the emergency stop on the wireless controller is X or the enter key in the terminal.
 
 - Make sure your trained policy is in `logs/`, and that the observation vector, scaling, and other settings in `deploy_config.py` are all correct.
-- Connect the Go2 via Ethernet cable.
 - Turn on the Go2 and wait until it is in the standing position.
 - In the terminal, run `uv run go2_deploy/deploy.py eth0`, but replace `eth0` with the actual network configuration. If this is successful, there should be a terminal output every few seconds telling you about the keyboard controls, observation frequency, etc.
 - There are 4 states the robot can be in:
