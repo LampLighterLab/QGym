@@ -226,7 +226,7 @@ class OnPolicyRunner(BaseRunner):
         )
 
     def load(self, path, load_optimizer=True):
-        loaded_dict = torch.load(path, weights_only=True)
+        loaded_dict = torch.load(path, map_location=self.device, weights_only=True)
         self.alg.actor.load_state_dict(loaded_dict["actor_state_dict"])
         self.alg.critic.load_state_dict(loaded_dict["critic_state_dict"])
         if load_optimizer:
