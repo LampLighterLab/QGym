@@ -2,11 +2,16 @@
 
 ## Setup
 
-To deploy a custom policy, you will need to get `unitree-sdk2py` and `cyclonedds`.
+To deploy a custom policy, you will need to get `unitree-sdk2py` and `cyclonedds`. First make sure the QGym virtual environment is correctly set up.
 
-Install `cyclonedds`:
+Install `cyclonedds` version 0.10.2 [adapted from these instructions](https://pypi.org/project/cyclonedds/):
 - `git clone --branch 0.10.2 https://github.com/eclipse-cyclonedds/cyclonedds.git`
-- Activate QGym's venv
+- `cd cyclonedds && mkdir build install && cd build`
+- `cmake .. -DCMAKE_INSTALL_PREFIX=../install`
+- `cmake --build . --config RelWithDebInfo --target install`
+- `cd ..`
+- `export CYCLONEDDS_HOME=<path to your cyclonedds directory>/cyclonedds/install`
+- Activate QGym's venv (in `QGym/`: `source ./venv/bin/activate`)
 - `CC=clang uv pip install cyclonedds==0.10.2`
 
 Install `unitree-sdk2py`:
@@ -14,6 +19,9 @@ Install `unitree-sdk2py`:
 - `git clone https://github.com/unitreerobotics/unitree_sdk2_python.git`
 - `cd unitree_sdk2_python`
 - `uv pip install -e .`
+- If you get the error `Could not locate cyclonedds. Try to set CYCLONEDDS_HOME or CMAKE_PREFIX_PATH`:
+    - `export CYCLONEDDS_HOME=<path to your cyclonedds directory>/cyclonedds/install`
+    - `uv pip install -e .`
 
 ## Configure deployment
 
@@ -40,7 +48,6 @@ If anything goes wrong, the emergency stop on the wireless controller is X or th
 - To stop running the script, return to `RECOVERY`, lie the robot on the ground, and press `Ctrl+C` in the terminal.
 - Logs of the robot data can be found in `logs/deploy/`.
 
-
 ## Remote controls
 
 - Switch modes
@@ -64,3 +71,10 @@ Type the following letters in the terminal:
 - Decrease kp by 10%: `k`
 - Increase kd by 10%: `l`
 - Decrease kd by 10%: `j`
+
+## Something went wrong
+
+- `deploy.py` is printing errors in the terminal
+    - Make sure the robot is either lying down, or standing up while in sport mode, and exit the script in the terminal.
+- The robot is shaking violently when running a custom policy
+    - In `deploy_config.py`, make sure that your observation vector is correct and the values in the `DeployScaling` class match what you used during training. Also make sure you are running the correct policy from `logs/`.
