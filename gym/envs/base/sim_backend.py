@@ -213,7 +213,8 @@ class SimBackend(ABC):
         the simulator for the specified environments.
 
         The caller writes the desired state into the tensor views before
-        calling this method.
+        calling this method. Scalar-joint positions outside an asset limit are
+        clamped to that limit, and the public tensor reflects the applied state.
         """
 
     def reset_root_state(self, env_ids: torch.Tensor) -> None:

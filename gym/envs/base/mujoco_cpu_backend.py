@@ -233,9 +233,11 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         for i in env_ids.tolist():
             self._activate_domain(i)
             model = self._model_for_env(i)
-            self._datas[i].qpos[qoff:] = (
-                self._dof_pos_view[i].cpu().numpy()[self._native_to_canonical_dof_np]
-            )
+            canonical_pos = self._clamp_dof_positions(self._dof_pos_view[i])
+            self._dof_pos_view[i].copy_(canonical_pos)
+            self._datas[i].qpos[qoff:] = canonical_pos.cpu().numpy()[
+                self._native_to_canonical_dof_np
+            ]
             self._datas[i].qvel[voff:] = (
                 self._dof_vel_view[i].cpu().numpy()[self._native_to_canonical_dof_np]
             )

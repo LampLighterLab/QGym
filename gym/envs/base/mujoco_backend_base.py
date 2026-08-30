@@ -46,6 +46,7 @@ class MuJocoBackendBase(SimBackend):
         self._canonical_to_native_dof_np: np.ndarray = None
         self._native_to_canonical_dof_np: np.ndarray = None
         self._canonical_to_native_body_np: np.ndarray = None
+        self._dof_position_limits: torch.Tensor = None
         # Floating-base offsets (0 for fixed-base)
         self._has_free_joint: bool = False
         self._qpos_offset: int = 0
@@ -351,6 +352,15 @@ class MuJocoBackendBase(SimBackend):
         self._canonical_to_native_body = torch.tensor(
             canonical_to_native_body, dtype=torch.long, device=device
         )
+        native_position_limits = mjm.jnt_range[jnt_start:].copy()
+        limited = mjm.jnt_limited[jnt_start:].astype(bool)
+        native_position_limits[~limited, 0] = -np.inf
+        native_position_limits[~limited, 1] = np.inf
+        self._dof_position_limits = torch.tensor(
+            native_position_limits[self._canonical_to_native_dof_np],
+            dtype=torch.float,
+            device=device,
+        )
 
         # Config vectors are canonical; MuJoCo model arrays are native.
         damping = getattr(cfg.asset, "joint_damping", 0.0)
@@ -384,6 +394,13 @@ class MuJocoBackendBase(SimBackend):
             task._get_env_origins()
         if task is not None and hasattr(task, "_process_dof_props"):
             task._process_dof_props(self._make_dof_props(mjm), env_id=0)
+
+    def _clamp_dof_positions(self, positions: torch.Tensor) -> torch.Tensor:
+        """Apply native scalar-joint limits to canonical reset positions."""
+        return torch.maximum(
+            torch.minimum(positions, self._dof_position_limits[:, 1]),
+            self._dof_position_limits[:, 0],
+        )
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 

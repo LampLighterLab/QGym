@@ -9,6 +9,29 @@ import pytest
 import torch
 
 
+def _assert_limited_dof_reset_clamps(backend):
+    props = backend._make_dof_props(backend._mjm)
+    lower = torch.tensor(props["lower"], dtype=torch.float, device=backend.device)
+    upper = torch.tensor(props["upper"], dtype=torch.float, device=backend.device)
+    requested = torch.where(
+        torch.arange(backend.num_dof, device=backend.device) % 2 == 0,
+        lower - 1.0,
+        upper + 1.0,
+    )
+    untouched = backend.dof_pos[1:].clone()
+
+    backend.dof_pos[0] = requested
+    backend.reset_dof_state(torch.tensor([0], device=backend.device))
+
+    expected = torch.where(
+        torch.arange(backend.num_dof, device=backend.device) % 2 == 0,
+        lower,
+        upper,
+    )
+    torch.testing.assert_close(backend.dof_pos[0], expected)
+    torch.testing.assert_close(backend.dof_pos[1:], untouched)
+
+
 # ── Shapes and metadata ────────────────────────────────────────────────────────
 
 
@@ -135,6 +158,9 @@ class TestLeggedPhysics:
 
 
 class TestLeggedReset:
+    def test_limited_dof_reset_clamps_to_asset_range(self, legged_cpu_backend):
+        _assert_limited_dof_reset_clamps(legged_cpu_backend)
+
     def test_reset_root_state_persists(self, legged_cpu_backend):
         b = legged_cpu_backend
         b.root_states[0, 2] = 1.0  # set z=1
@@ -176,6 +202,9 @@ class TestLeggedWarpShapes:
     def test_rigid_body_states_shape(self, legged_warp_backend):
         b = legged_warp_backend
         assert b.rigid_body_states.shape == (4 * b.num_bodies, 13)
+
+    def test_limited_dof_reset_clamps_to_asset_range(self, legged_warp_backend):
+        _assert_limited_dof_reset_clamps(legged_warp_backend)
 
 
 # ── Cross-backend comparison ──────────────────────────────────────────────────

@@ -17,7 +17,10 @@ in their getters — the task layer caches these tensors once at init and expect
 in-place updates (SimBackend contract: all tensors live after step() returns).
 """
 
+import mujoco
+import mujoco_warp as mjw
 import torch
+import warp as wp
 
 from gym.envs.base.domain_randomization import (
     contact_friction_range,
@@ -172,8 +175,6 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._body_mass_native_t[ids[:, None], body_ids[None, :]] = masses
         self._body_inertia_native_t[ids[:, None], body_ids[None, :]] = inertias
 
-        import mujoco_warp as mjw
-
         with self._wp_ctx:
             mjw.set_const(self._m, self._d)
         self._sync_assembled_states()
@@ -181,10 +182,6 @@ class MuJocoWarpBackend(MuJocoBackendBase):
     # ── World building ─────────────────────────────────────────────────────────
 
     def setup(self, cfg, num_envs: int, device: str, task=None) -> None:
-        import mujoco
-        import mujoco_warp as mjw
-        import warp as wp
-
         self._device = device
         self._num_envs = num_envs
         self._randomize_contact_friction = contact_friction_range(cfg) is not None
@@ -260,8 +257,6 @@ class MuJocoWarpBackend(MuJocoBackendBase):
     # ── Per-step ───────────────────────────────────────────────────────────────
 
     def step(self, torques: torch.Tensor) -> None:
-        import mujoco_warp as mjw
-
         with self._wp_ctx:
             off = self._qvel_offset
             native_torques = torques.index_select(1, self._native_to_canonical_dof)
@@ -283,11 +278,12 @@ class MuJocoWarpBackend(MuJocoBackendBase):
     # ── Reset ──────────────────────────────────────────────────────────────────
 
     def reset_dof_state(self, env_ids: torch.Tensor) -> None:
-        import mujoco_warp as mjw
-
         env_ids = env_ids.to(device=self._device)
-        canonical_pos = self._dof_pos_view.index_select(0, env_ids)
+        canonical_pos = self._clamp_dof_positions(
+            self._dof_pos_view.index_select(0, env_ids)
+        )
         canonical_vel = self._dof_vel_view.index_select(0, env_ids)
+        self._dof_pos_view.index_copy_(0, env_ids, canonical_pos)
         self._qpos_t[env_ids, self._qpos_offset :] = canonical_pos.index_select(
             1, self._native_to_canonical_dof
         )
@@ -308,8 +304,6 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._qpos_t[env_ids, 3:7] = rs[:, 3:7][:, XYZW_TO_WXYZ]
         self._qvel_t[env_ids, :3] = rs[:, 7:10]
         self._qvel_t[env_ids, 3:6] = rs[:, 10:13]
-
-        import mujoco_warp as mjw
 
         with self._wp_ctx:
             mjw.forward(self._m, self._d)
