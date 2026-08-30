@@ -128,6 +128,14 @@ Important invalid evidence remains visible:
   VSim-trained checkpoint failed on both MuJoCo targets even though the other
   tested transfer directions passed. Do not present that campaign as full
   policy parity.
+- A later Go2 observation audit found that limited-joint resets were not
+  equivalent: VSim projected an out-of-range calf position onto the URDF
+  limit, while MuJoCo retained the invalid requested value until stepping.
+  MuJoCo CPU and Warp now clamp limited scalar joints during reset and expose
+  the applied value through the public state tensor. Pre-fix Go2 transfer
+  artifacts are invalid for initial-observation parity. With the corrected
+  reset, initial policy inputs and actions agree to numerical precision, but
+  the rollout still diverges and requires a policy-free dynamics probe.
 - A later VSim training run ended because the host GPU fell off the PCIe bus,
   not because the policy diverged. Its partial checkpoint is not promotion
   evidence.
