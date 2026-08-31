@@ -32,6 +32,46 @@ def _assert_limited_dof_reset_clamps(backend):
     torch.testing.assert_close(backend.dof_pos[1:], untouched)
 
 
+def _assert_rigid_body_state_is_current_after_step(backend):
+    device = backend.device
+    num_envs = backend.root_states.shape[0]
+    env_ids = torch.arange(num_envs, device=device)
+    torques = torch.zeros(num_envs, backend.num_dof, device=device)
+
+    backend.root_states[:, :3] = torch.tensor([0.0, 0.0, 5.0], device=device)
+    backend.root_states[:, 3:7] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device)
+    backend.root_states[:, 7:13] = 0.0
+    backend.dof_vel.zero_()
+    backend.reset_dof_state(env_ids)
+    backend.reset_root_state(env_ids)
+
+    # The first step puts the assembled public body state on a known native
+    # state. The second step must expose that step's result, not the first
+    # step's pre-integration kinematics.
+    backend.step(torques)
+    root_position = backend.root_states[:, :3].clone()
+    body_state = backend.rigid_body_states.view(num_envs, backend.num_bodies, 13)
+    body_position = body_state[:, :, :3].clone()
+
+    backend.step(torques)
+    root_translation = backend.root_states[:, :3] - root_position
+    body_state = backend.rigid_body_states.view(num_envs, backend.num_bodies, 13)
+    body_translation = body_state[:, :, :3] - body_position
+
+    torch.testing.assert_close(
+        body_translation,
+        root_translation[:, None, :].expand_as(body_translation),
+        atol=2e-6,
+        rtol=1e-4,
+    )
+    torch.testing.assert_close(
+        body_state[:, :, 7:10],
+        backend.root_states[:, None, 7:10].expand_as(body_state[:, :, 7:10]),
+        atol=2e-6,
+        rtol=1e-4,
+    )
+
+
 # ── Shapes and metadata ────────────────────────────────────────────────────────
 
 
@@ -128,6 +168,26 @@ class TestLeggedPhysics:
         finally:
             backend.close()
 
+    def test_configured_geom_attributes_are_applied(self):
+        """Compiled MuJoCo geoms receive the config's solver parameters."""
+        import types
+
+        pytest.importorskip("mujoco")
+        from gym.envs.base.mujoco_cpu_backend import MuJocoCPUBackend
+        from tests.unit_tests.conftest import _make_mini_cheetah_cfg
+
+        cfg = _make_mini_cheetah_cfg()
+        cfg.mjspec_geom_attributes = types.SimpleNamespace(solref=[0.005, 1.0])
+        backend = MuJocoCPUBackend()
+        backend.setup(cfg, num_envs=1, device="cpu", task=None)
+        try:
+            np.testing.assert_allclose(
+                backend._mjm.geom_solref,
+                np.broadcast_to([0.005, 1.0], backend._mjm.geom_solref.shape),
+            )
+        finally:
+            backend.close()
+
     def test_robot_above_ground(self, legged_cpu_backend):
         """Robot shouldn't fall through the ground plane."""
         b = legged_cpu_backend
@@ -152,6 +212,45 @@ class TestLeggedPhysics:
             b.step(torques)
         z_after = b.root_states[0, 2].item()
         assert z_after < z_init, "Gravity should pull robot down"
+
+    def test_rigid_body_state_is_current_after_step(self, legged_cpu_backend):
+        _assert_rigid_body_state_is_current_after_step(legged_cpu_backend)
+
+    def test_rigid_body_velocity_is_at_published_body_origin(self, legged_cpu_backend):
+        import mujoco
+
+        backend = legged_cpu_backend
+        backend.root_states[:, 2] = 2.0
+        backend.root_states[:, 7:10] = torch.tensor([0.2, -0.1, 0.3])
+        backend.root_states[:, 10:13] = torch.tensor([0.4, -0.2, 0.1])
+        backend.dof_vel[:] = torch.linspace(-0.5, 0.5, backend.num_dof)
+        env_ids = torch.arange(backend.root_states.shape[0])
+        backend.reset_dof_state(env_ids)
+        backend.reset_root_state(env_ids)
+        backend.step(torch.zeros(4, backend.num_dof))
+
+        public_state = backend.rigid_body_states.view(4, backend.num_bodies, 13)[0]
+        data = backend._datas[0]
+        model = backend._model_for_env(0)
+        for canonical_id, native_id in enumerate(backend._canonical_to_native_body_np):
+            linear_jacobian = np.empty((3, model.nv))
+            angular_jacobian = np.empty((3, model.nv))
+            mujoco.mj_jac(
+                model,
+                data,
+                linear_jacobian,
+                angular_jacobian,
+                data.xpos[native_id],
+                int(native_id),
+            )
+            linear_velocity = linear_jacobian @ data.qvel
+            angular_velocity = angular_jacobian @ data.qvel
+            np.testing.assert_allclose(
+                public_state[canonical_id, 7:13].numpy(),
+                np.concatenate((linear_velocity, angular_velocity)),
+                atol=2e-6,
+                rtol=1e-5,
+            )
 
 
 # ── Reset ──────────────────────────────────────────────────────────────────────
@@ -205,6 +304,9 @@ class TestLeggedWarpShapes:
 
     def test_limited_dof_reset_clamps_to_asset_range(self, legged_warp_backend):
         _assert_limited_dof_reset_clamps(legged_warp_backend)
+
+    def test_rigid_body_state_is_current_after_step(self, legged_warp_backend):
+        _assert_rigid_body_state_is_current_after_step(legged_warp_backend)
 
 
 # ── Cross-backend comparison ──────────────────────────────────────────────────
@@ -264,9 +366,19 @@ class TestLeggedCrossBackend:
 
             pos_err = (cpu.dof_pos - warp.dof_pos.cpu()).abs().max().item()
             root_err = (cpu.root_states - warp.root_states.cpu()).abs().max().item()
+            body_err = (
+                (cpu.rigid_body_states - warp.rigid_body_states.cpu())
+                .abs()
+                .max()
+                .item()
+            )
 
             tol = 1e-4 if step < 100 else 0.2
             assert pos_err < tol, f"DOF pos diverged at step {step}: {pos_err:.2e}"
             assert root_err < tol, (
                 f"Root states diverged at step {step}: {root_err:.2e}"
             )
+            if step < 100:
+                assert body_err < 2e-3, (
+                    f"Rigid-body states diverged at step {step}: {body_err:.2e}"
+                )

@@ -98,7 +98,10 @@ class SimBackend(ABC):
 
     @property
     def rigid_body_states(self) -> torch.Tensor:
-        """[num_envs * num_bodies, 13].  Legged robots only.
+        """[num_envs * num_bodies, 13]. Legged robots only.
+
+        Each row is body-origin position, scalar-last orientation, body-origin
+        world linear velocity, and world angular velocity.
 
         Raises NotImplementedError for backends/configs that don't need it.
         """

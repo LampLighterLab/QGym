@@ -135,13 +135,51 @@ Important invalid evidence remains visible:
   the applied value through the public state tensor. Pre-fix Go2 transfer
   artifacts are invalid for initial-observation parity. With the corrected
   reset, initial policy inputs and actions agree to numerical precision, but
-  the rollout still diverges and requires a policy-free dynamics probe.
+  the rollout still diverges. The resulting audit also found two MuJoCo public
+  rigid-body-state bugs: pose/velocity fields were one completed physics step
+  stale, and COM-based `cvel` translation was published as the velocity of the
+  body origin. Both CPU and Warp now refresh post-integration kinematics and
+  publish body-origin velocity; pre-fix rigid-body trajectory plots are invalid.
+  The corrected 500 Hz unapplied-policy probe queries the policy once per
+  physics step but leaves both action buffers at zero. In its zero-torque mode,
+  VSim and MuJoCo Warp remain near numerical precision through free fall (at
+  `0.064 s`, rigid-body position RMSE is `6.0e-7 m` and joint-velocity RMSE is
+  `3.8e-7 rad/s`). VSim first contacts at `0.066 s` and MuJoCo at `0.068 s`;
+  at the earlier sample, foot-force RMSE is `129 N` and joint-velocity RMSE is
+  `2.60 rad/s`. With the gait/PD controller active, both first contact at
+  `0.056 s`, but foot-force RMSE is `76.0 N` despite only `0.064 N m` preceding
+  applied-torque RMSE. A zero-torque timestep sweep at `250`, `500`, `1000`,
+  and `2000 Hz` shows VSim responding exactly one physics step before MuJoCo
+  in every case (a `4`, `2`, `1`, and `0.5 ms` lead). At `500 Hz`, the last
+  common airborne state has collision-sphere clearance matched within
+  `1.2e-6 m` and predicts impact `0.43 ms` into the next step. MuJoCo reaches
+  `0.066 s` with `1.024 mm` penetration but no contact from that step's
+  pre-integration collision stage; evaluating collision at the unchanged
+  post-step state finds all four contacts. This rules out an imported-geometry
+  threshold as the cause of the one-step onset lag and identifies different
+  contact/integration staging. Onset-aligned force magnitudes still differ, so
+  contact material/compliance and solver-response discriminators remain.
+  An onset-aligned zero-torque fit selected MuJoCo `solref=[0.005, 1.0]`
+  instead of its default `[0.02, 1.0]`. Over the first `32 ms` of contact at
+  `500 Hz`, this reduces total foot-force RMSE from `202 N` to `65.6 N`,
+  cumulative-impulse RMSE from `0.840 N s` to `0.152 N s`, joint-velocity
+  RMSE from `1.21` to `0.275 rad/s`, and foot vertical-velocity RMSE from
+  `0.252` to `0.0530 m/s`. With the gait/PD controller active, first-contact
+  foot-force RMSE falls from `76.0 N` to `19.1 N`, and the MuJoCo termination
+  moves from `0.516 s` to `0.600 s` versus VSim's `0.616 s`. At `1000 Hz`,
+  the fitted setting also improves the `32 ms` cumulative-impulse RMSE from
+  `0.962` to `0.357 N s` and joint-velocity RMSE from `1.38` to
+  `0.547 rad/s`. The one-step contact-response lead remains by design; the
+  fit changes the force response actually applied by MuJoCo and does not
+  synthesize a post-step contact.
 - A later VSim training run ended because the host GPU fell off the PCIe bus,
   not because the policy diverged. Its partial checkpoint is not promotion
   evidence.
 
-Use `scripts/mini_cheetah_fidelity.py`, `scripts/eval_policy.py`, and the
-checked-in benchmark wrappers for new evidence. Keep checkpoint selection,
+Use `scripts/mini_cheetah_fidelity.py`, `scripts/eval_policy.py`,
+`scripts/compare_backend_unapplied_actions.py`, and the checked-in benchmark
+wrappers for new evidence. The paired Go2 artifact can be explored with
+`notebooks/go2_backend_unapplied_actions.py`. Keep checkpoint selection,
 commands, reset distribution, episode duration, and rollout geometry fixed
 across transfer cells.
 

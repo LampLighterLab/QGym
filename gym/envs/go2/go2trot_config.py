@@ -186,10 +186,10 @@ class Go2TrotCfg(LeggedRobotCfg):
         commands = [3, 1, 3]
 
     class mjspec_attributes:
-        # MuJoCo Warp allocates a fixed constraint buffer from this value and
-        # truncates constraints on overflow. Fallen/contact-rich poses reached
-        # 200 rows during training, so retain explicit headroom.
         njmax = 256
+
+    class mjspec_geom_attributes:
+        solref = [0.005, 1.0]
 
     class mjspec_option_attributes:
         ccd_iterations = 50

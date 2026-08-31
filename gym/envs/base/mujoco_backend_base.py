@@ -217,6 +217,8 @@ class MuJocoBackendBase(SimBackend):
                     )
 
         mjm = spec.compile()
+        if hasattr(cfg, "mjspec_geom_attributes"):
+            mjm.geom_solref[:] = cfg.mjspec_geom_attributes.solref
         if terrain_sliding_friction is not None:
             # MuJoCo combines same-priority geom friction using the larger
             # coefficient. URDF-imported robot geoms otherwise retain the
