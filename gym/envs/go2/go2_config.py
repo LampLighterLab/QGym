@@ -157,6 +157,12 @@ class Go2Cfg(LeggedRobotCfg):
         # 200 rows during training, so retain explicit headroom.
         njmax = 256
 
+    class mjspec_geom_attributes:
+        # Fit to VSim's onset-aligned Go2 drop response at 500 Hz. The engines
+        # still respond to a ground crossing one MuJoCo step apart, but this
+        # matches the applied contact impulse instead of masking that staging.
+        solref = [0.005, 1.0]
+
     class mjspec_option_attributes:
         ccd_iterations = 50
         # MuJoCo 3.11's native multi-contact CCD segfaults on a valid fallen

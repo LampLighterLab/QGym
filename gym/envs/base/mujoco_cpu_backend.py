@@ -9,6 +9,7 @@ after each step.
 import copy
 
 import mujoco
+import numpy as np
 import torch
 
 from gym.envs.base.domain_randomization import (
@@ -204,7 +205,15 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             self._activate_domain(i)
             # cfrc_ext is only populated with constraint/contact forces by
             # mj_rnePostConstraint; mj_step alone leaves it at zero.
-            mujoco.mj_rnePostConstraint(self._model_for_env(i), d)
+            model = self._model_for_env(i)
+            mujoco.mj_rnePostConstraint(model, d)
+            # mj_step integrates qpos/qvel after computing body kinematics.
+            # Refresh only the derived pose/velocity fields so every public
+            # state tensor describes the completed step. A second mj_forward
+            # would also recompute collision, constraints, and acceleration.
+            mujoco.mj_kinematics(model, d)
+            mujoco.mj_comPos(model, d)
+            mujoco.mj_comVel(model, d)
             self._dof_pos_view[i] = torch.from_numpy(d.qpos[qoff:][dof_order].copy())
             self._dof_vel_view[i] = torch.from_numpy(d.qvel[voff:][dof_order].copy())
             self._contact_forces_t[i] = torch.from_numpy(
@@ -215,8 +224,14 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             rbs[:, 0:3] = torch.from_numpy(d.xpos[body_order].copy())
             mj_quat = torch.from_numpy(d.xquat[body_order].copy())
             rbs[:, 3:7] = mj_quat[:, WXYZ_TO_XYZW]
-            rbs[:, 7:10] = torch.from_numpy(d.cvel[body_order, 3:6].copy())
-            rbs[:, 10:13] = torch.from_numpy(d.cvel[body_order, 0:3].copy())
+            angular_velocity = d.cvel[body_order, 0:3]
+            root_com = d.subtree_com[model.body_rootid[body_order]]
+            body_offset = d.xpos[body_order] - root_com
+            linear_velocity = d.cvel[body_order, 3:6] - np.cross(
+                body_offset, angular_velocity
+            )
+            rbs[:, 7:10] = torch.from_numpy(linear_velocity.copy())
+            rbs[:, 10:13] = torch.from_numpy(angular_velocity.copy())
         if self._has_free_joint:
             for i, d in enumerate(self._datas):
                 self._root_states_t[i, :3] = torch.from_numpy(d.qpos[:3].copy())

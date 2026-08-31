@@ -7,6 +7,9 @@ Step pipeline (mirrors mj_step):
     mjw.forward(m, d)             # position + velocity + actuation + acceleration
     mjw.euler(m, d)               # semi-implicit Euler integration
     mjw.rne_postconstraint(m, d)  # populate cfrc_ext (contact forces)
+    mjw.kinematics(m, d)          # refresh post-integration body poses
+    mjw.com_pos(m, d)
+    mjw.com_vel(m, d)             # refresh post-integration body velocities
     _sync_assembled_states()      # refresh root_states / rigid_body_states
 
 Native state tensors are zero-copy torch views into Warp arrays (via
@@ -49,6 +52,8 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._xpos_t: torch.Tensor = None  # [N, nbody, 3]
         self._xquat_t: torch.Tensor = None  # [N, nbody, 4]
         self._cvel_t: torch.Tensor = None  # [N, nbody, 6]
+        self._subtree_com_t: torch.Tensor = None  # [N, nbody, 3]
+        self._body_rootid_t: torch.Tensor = None  # [nbody]
         self._root_states_t: torch.Tensor = None  # [N, 13]
         self._rigid_body_states_t: torch.Tensor = None  # [N, nbody, 13]
         self._dof_state_t: torch.Tensor = None  # [N, num_dof, 2]
@@ -124,10 +129,18 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         xpos = self._xpos_t.index_select(1, self._canonical_to_native_body)
         xquat = self._xquat_t.index_select(1, self._canonical_to_native_body)
         cvel = self._cvel_t.index_select(1, self._canonical_to_native_body)
+        root_ids = self._body_rootid_t.index_select(
+            0, self._canonical_to_native_body
+        ).long()
+        root_com = self._subtree_com_t.index_select(1, root_ids)
+        angular_velocity = cvel[:, :, 0:3]
+        linear_velocity = cvel[:, :, 3:6] - torch.cross(
+            xpos - root_com, angular_velocity, dim=-1
+        )
         rbs[:, :, 0:3] = xpos
         rbs[:, :, 3:7] = xquat[:, :, WXYZ_TO_XYZW]
-        rbs[:, :, 7:10] = cvel[:, :, 3:6]
-        rbs[:, :, 10:13] = cvel[:, :, 0:3]
+        rbs[:, :, 7:10] = linear_velocity
+        rbs[:, :, 10:13] = angular_velocity
         cfrc = self._cfrc_t.index_select(1, self._canonical_to_native_body)
         self._contact_forces_t.copy_(cfrc[..., 3:6])
 
@@ -224,6 +237,8 @@ class MuJocoWarpBackend(MuJocoBackendBase):
             self._xpos_t = wp.to_torch(self._d.xpos)
             self._xquat_t = wp.to_torch(self._d.xquat)
             self._cvel_t = wp.to_torch(self._d.cvel)
+            self._subtree_com_t = wp.to_torch(self._d.subtree_com)
+            self._body_rootid_t = wp.to_torch(self._m.body_rootid)
             if self._randomize_contact_friction:
                 self._geom_friction_t = wp.to_torch(self._m.geom_friction)
                 if mjm.npair:
@@ -269,6 +284,12 @@ class MuJocoWarpBackend(MuJocoBackendBase):
             # cfrc_ext is only populated with constraint/contact forces by
             # rne_postconstraint; forward+euler alone leave it at zero.
             mjw.rne_postconstraint(self._m, self._d)
+            # Euler updates qpos/qvel after forward has assembled xpos/xquat
+            # and cvel. Refresh those derived fields without recomputing the
+            # collision, constraint, or acceleration stages.
+            mjw.kinematics(self._m, self._d)
+            mjw.com_pos(self._m, self._d)
+            mjw.com_vel(self._m, self._d)
         self._sync_assembled_states()
 
             self.root_states[...] = (

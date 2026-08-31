@@ -21,6 +21,7 @@ import json
 import math
 import os
 from pathlib import Path
+import types
 
 import numpy as np
 import torch
@@ -287,6 +288,8 @@ def build(
     stiffness_scale_range=None,
     damping_scale_range=None,
     link_mass_scale_range=None,
+    control_at_sim_frequency=False,
+    mujoco_geom_solref=None,
 ):
     import gym.envs  # noqa: F401 — registers tasks
 
@@ -308,6 +311,10 @@ def build(
     # not leak into a later programmatic build in the same process.
     env_cfg = copy.deepcopy(registered_env_cfg)
     train_cfg = copy.deepcopy(registered_train_cfg)
+    if mujoco_geom_solref is not None:
+        env_cfg.mjspec_geom_attributes = types.SimpleNamespace(
+            solref=mujoco_geom_solref
+        )
     configure_contact_friction_dr(
         env_cfg,
         contact_friction_dr,
@@ -335,6 +342,8 @@ def build(
         env_cfg.push_robots.toggle = False
     if hasattr(env_cfg, "commands"):
         env_cfg.commands.resampling_time = t_end + 10.0
+    if control_at_sim_frequency:
+        env_cfg.control.ctrl_frequency = env_cfg.control.desired_sim_frequency
     # reset_to_uniform runs one long episode; range-reset legged eval keeps the
     # task's own episode length so survival-to-timeout is meaningful.
     if reset_mode == "reset_to_uniform":
