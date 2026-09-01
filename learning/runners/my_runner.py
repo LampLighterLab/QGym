@@ -98,9 +98,7 @@ class MyRunner(OnPolicyRunner):
                         self.update_rewards_dict(rewards_dict, step)
                     else:
                         # catch and reset failed envs
-                        to_be_reset = self.env.timed_out | self.env.terminated
-                        env_ids = (to_be_reset).nonzero(as_tuple=False).flatten()
-                        self.env._reset_idx(env_ids)
+                        self.reset_envs()
 
                     total_rewards = torch.stack(
                         tuple(rewards_dict.sum(dim=0).values())

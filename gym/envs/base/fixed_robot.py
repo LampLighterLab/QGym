@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from gym.envs.base.base_task import BaseTask
-from gym.utils import random_sample
+from gym.utils import masked_update, random_sample
 from gym.utils.torch_quat import get_axis_params, to_torch
 
 
@@ -39,9 +39,6 @@ class FixedRobot(BaseTask):
         self._post_decimation_step()
         self._check_terminations_and_timeouts()
 
-        env_ids = self.to_be_reset.nonzero(as_tuple=False).flatten()
-        self._reset_idx(env_ids)
-
     def _pre_decimation_step(self):
         return None
 
@@ -74,12 +71,10 @@ class FixedRobot(BaseTask):
 
         self.dof_pos_obs = self.dof_pos - self.default_dof_pos
 
-    def _reset_idx(self, env_ids):
-        if len(env_ids) == 0:
-            return
-        self._reset_system(env_ids)
-        self.dof_pos_history[env_ids] = 0.0
-        self.episode_length_buf[env_ids] = 0
+    def _reset_idx(self, reset_mask):
+        self._reset_system(reset_mask)
+        self.dof_pos_history.masked_fill_(reset_mask.unsqueeze(1), 0.0)
+        self.episode_length_buf.masked_fill_(reset_mask, 0)
 
     def _initialize_sim(self):
         """Delegates world-building to the backend, then reads back metadata."""
@@ -262,30 +257,31 @@ class FixedRobot(BaseTask):
         self.env_origins[:, 1] = spacing * yy.flatten()[: self.num_envs]
         self.env_origins[:, 2] = self.cfg.env.root_height
 
-    def _reset_system(self, env_ids):
-        self._reset_state(env_ids)
-        env_ids_int32 = env_ids.to(dtype=torch.int32)
-        self._backend.reset_dof_state(env_ids_int32)
+    def _reset_system(self, reset_mask):
+        self._reset_state(reset_mask)
+        self._backend.reset_dof_state(reset_mask)
 
     # ── Reset modes ─────────────────────────────────────────────────────────
 
-    def reset_to_basic(self, env_ids):
-        self.dof_pos[env_ids] = self.default_dof_pos
-        self.dof_vel[env_ids] = 0
+    def reset_to_basic(self, reset_mask):
+        masked_update(self.dof_pos, self.default_dof_pos, reset_mask)
+        self.dof_vel.masked_fill_(reset_mask.unsqueeze(1), 0.0)
 
-    def reset_to_range(self, env_ids):
-        self.dof_pos[env_ids] = random_sample(
-            env_ids,
+    def reset_to_range(self, reset_mask):
+        dof_pos = random_sample(
+            self.num_envs,
             self.dof_pos_range[:, 0],
             self.dof_pos_range[:, 1],
             device=self.device,
         )
-        self.dof_vel[env_ids] = random_sample(
-            env_ids,
+        dof_vel = random_sample(
+            self.num_envs,
             self.dof_vel_range[:, 0],
             self.dof_vel_range[:, 1],
             device=self.device,
         )
+        masked_update(self.dof_pos, dof_pos, reset_mask)
+        masked_update(self.dof_vel, dof_vel, reset_mask)
 
     # ── Reward helpers ───────────────────────────────────────────────────────
 

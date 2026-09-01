@@ -242,10 +242,10 @@ class MuJocoCPUBackend(MuJocoBackendBase):
 
     # ── Reset ──────────────────────────────────────────────────────────────────
 
-    def reset_dof_state(self, env_ids: torch.Tensor) -> None:
+    def reset_dof_state(self, reset_mask: torch.Tensor) -> None:
         qoff = self._qpos_offset
         voff = self._qvel_offset
-        for i in env_ids.tolist():
+        for i in reset_mask.nonzero(as_tuple=False).flatten().tolist():
             self._activate_domain(i)
             model = self._model_for_env(i)
             canonical_pos = self._clamp_dof_positions(self._dof_pos_view[i])
@@ -258,10 +258,10 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             )
             mujoco.mj_forward(model, self._datas[i])
 
-    def reset_root_state(self, env_ids: torch.Tensor) -> None:
+    def reset_root_state(self, reset_mask: torch.Tensor) -> None:
         if not self._has_free_joint:
             return
-        for i in env_ids.tolist():
+        for i in reset_mask.nonzero(as_tuple=False).flatten().tolist():
             self._activate_domain(i)
             model = self._model_for_env(i)
             rs = self._root_states_t[i].cpu()
@@ -272,7 +272,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             mujoco.mj_forward(model, self._datas[i])
 
     def set_all_root_states(self) -> None:
-        self.reset_root_state(torch.arange(self._num_envs))
+        self.reset_root_state(torch.ones(self._num_envs, dtype=torch.bool))
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 

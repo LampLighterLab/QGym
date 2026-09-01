@@ -3,6 +3,7 @@ import torch
 import numpy as np
 
 from gym.envs.base.fixed_robot import FixedRobot
+from gym.utils.sampling import masked_update
 
 
 class Pendulum(FixedRobot):
@@ -14,17 +15,19 @@ class Pendulum(FixedRobot):
         super()._post_decimation_step()
         self.dof_pos_obs = torch.cat([self.dof_pos.sin(), self.dof_pos.cos()], dim=1)
 
-    def _reset_system(self, env_ids):
-        super()._reset_system(env_ids)
-        self.dof_pos_obs[env_ids] = torch.cat(
-            [self.dof_pos[env_ids].sin(), self.dof_pos[env_ids].cos()], dim=1
+    def _reset_system(self, reset_mask):
+        super()._reset_system(reset_mask)
+        masked_update(
+            self.dof_pos_obs,
+            torch.cat([self.dof_pos.sin(), self.dof_pos.cos()], dim=1),
+            reset_mask,
         )
 
     def _check_terminations_and_timeouts(self):
         super()._check_terminations_and_timeouts()
-        self.terminated = self.timed_out
+        self.terminated.copy_(self.timed_out)
 
-    def reset_to_uniform(self, env_ids):
+    def reset_to_uniform(self, reset_mask):
         grid_points = int(sqrt(self.num_envs))
         lin_pos = torch.linspace(
             self.dof_pos_range[0, 0],
@@ -39,8 +42,8 @@ class Pendulum(FixedRobot):
             device=self.device,
         )
         grid = torch.cartesian_prod(lin_pos, lin_vel)
-        self.dof_pos[env_ids] = grid[env_ids, 0].unsqueeze(-1)
-        self.dof_vel[env_ids] = grid[env_ids, 1].unsqueeze(-1)
+        masked_update(self.dof_pos, grid[:, 0].unsqueeze(-1), reset_mask)
+        masked_update(self.dof_vel, grid[:, 1].unsqueeze(-1), reset_mask)
 
     def _reward_theta(self):
         # 0 at UP (theta=0), 2 at DOWN (theta=pi); sqrdexp peaks at err=0

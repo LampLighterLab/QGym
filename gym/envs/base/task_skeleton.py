@@ -42,13 +42,14 @@ class TaskSkeleton:
         except AttributeError:
             print("Value for " + name + " does not match tensor shape")
 
-    def _reset_idx(self, env_ids):
+    def _reset_idx(self, reset_mask):
         """Reset selected robots"""
         raise NotImplementedError
 
     def reset(self):
         """Reset all robots"""
-        self._reset_idx(torch.arange(self.num_envs, device=self.device))
+        self.to_be_reset.fill_(True)
+        self._reset_idx(self.to_be_reset)
         self.step()
         self.episode_length_buf[:] = 0
 

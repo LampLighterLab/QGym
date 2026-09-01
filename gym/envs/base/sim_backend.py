@@ -18,7 +18,7 @@ class SimBackend(ABC):
     # state tensors are live after this point
     for _ in training_loop:
         backend.step(torques)           # advance physics
-        backend.reset_dof_state(ids)    # commit reset state for specific envs
+        backend.reset_dof_state(mask)   # commit reset state for selected envs
     backend.close()
     """
 
@@ -211,17 +211,16 @@ class SimBackend(ABC):
     # ── Reset ───────────────────────────────────────────────────────────────
 
     @abstractmethod
-    def reset_dof_state(self, env_ids: torch.Tensor) -> None:
-        """Commit the current dof_pos[env_ids] / dof_vel[env_ids] values to
-        the simulator for the specified environments.
+    def reset_dof_state(self, reset_mask: torch.Tensor) -> None:
+        """Commit selected rows of the current dof_pos / dof_vel state.
 
         The caller writes the desired state into the tensor views before
         calling this method. Scalar-joint positions outside an asset limit are
         clamped to that limit, and the public tensor reflects the applied state.
         """
 
-    def reset_root_state(self, env_ids: torch.Tensor) -> None:
-        """Commit root_states[env_ids] to the simulator.
+    def reset_root_state(self, reset_mask: torch.Tensor) -> None:
+        """Commit selected rows of root_states to the simulator.
 
         Default no-op — fixed-base robots don't need this.
         """

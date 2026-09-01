@@ -38,7 +38,7 @@ class MiniCheetahRefCfg(MiniCheetahCfg):
         desired_sim_frequency = 500
 
     class commands(MiniCheetahCfg.commands):
-        pass
+        axis_aligned_fraction = 0.0
 
     class push_robots(MiniCheetahCfg.push_robots):
         pass

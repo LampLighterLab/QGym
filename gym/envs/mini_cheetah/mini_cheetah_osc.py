@@ -1,7 +1,7 @@
 import torch
 
 from gym.envs.mini_cheetah.mini_cheetah import MiniCheetah
-from gym.utils.sampling import torch_rand_float
+from gym.utils.sampling import masked_update
 
 MINI_CHEETAH_WEIGHT = 8.292 * 9.81  # Weight of mini cheetah in Newtons
 
@@ -31,54 +31,41 @@ class MiniCheetahOsc(MiniCheetah):
             self.num_envs, 1, device=self.device
         )
 
-    def _reset_oscillators(self, env_ids):
-        if len(env_ids) == 0:
-            return
-            # * random
+    def _reset_oscillators(self, reset_mask):
         if self.cfg.osc.init_to == "random":
-            self.oscillators[env_ids] = torch_rand_float(
-                0,
-                2 * torch.pi,
-                shape=self.oscillators[env_ids].shape,
-                device=self.device,
-            )
+            candidate = torch.rand_like(self.oscillators) * 2 * torch.pi
         elif self.cfg.osc.init_to == "standing":
-            self.oscillators[env_ids] = 3 * torch.pi / 2
+            candidate = torch.full_like(self.oscillators, 3 * torch.pi / 2)
         elif self.cfg.osc.init_to == "trot":
-            self.oscillators[env_ids] = torch.tensor(
+            candidate = torch.tensor(
                 [0.0, torch.pi, torch.pi, 0.0], device=self.device
-            )
+            ).expand_as(self.oscillators)
         elif self.cfg.osc.init_to == "pace":
-            self.oscillators[env_ids] = torch.tensor(
+            candidate = torch.tensor(
                 [0.0, torch.pi, 0.0, torch.pi], device=self.device
-            )
+            ).expand_as(self.oscillators)
             if self.cfg.osc.init_w_offset:
-                self.oscillators[env_ids, :] += (
-                    torch.rand_like(self.oscillators[env_ids, 0]).unsqueeze(1)
-                    * 2
-                    * torch.pi
+                candidate = candidate + (
+                    torch.rand(self.num_envs, 1, device=self.device) * 2 * torch.pi
                 )
         elif self.cfg.osc.init_to == "pronk":
-            self.oscillators[env_ids, :] *= 0.0
+            candidate = torch.zeros_like(self.oscillators)
         elif self.cfg.osc.init_to == "bound":
-            self.oscillators[env_ids, :] = torch.tensor(
+            candidate = torch.tensor(
                 [torch.pi, torch.pi, 0.0, 0.0], device=self.device
-            )
+            ).expand_as(self.oscillators)
         else:
             raise NotImplementedError
 
         if self.cfg.osc.init_w_offset:
-            self.oscillators[env_ids, :] += (
-                torch.rand_like(self.oscillators[env_ids, 0]).unsqueeze(1)
-                * 2
-                * torch.pi
+            candidate = candidate + (
+                torch.rand(self.num_envs, 1, device=self.device) * 2 * torch.pi
             )
-        self.oscillators = torch.remainder(self.oscillators, 2 * torch.pi)
+        candidate = torch.remainder(candidate, 2 * torch.pi)
+        masked_update(self.oscillators, candidate, reset_mask)
 
-    def _reset_system(self, env_ids):
-        if len(env_ids) == 0:
-            return
-        self._reset_oscillators(env_ids)
+    def _reset_system(self, reset_mask):
+        self._reset_oscillators(reset_mask)
 
         self.oscillator_obs = torch.cat(
             (torch.cos(self.oscillators), torch.sin(self.oscillators)), dim=1
@@ -90,10 +77,8 @@ class MiniCheetahOsc(MiniCheetah):
             < self.cfg.init_state.timeout_reset_ratio
         )
 
-        env_ids = (self.terminated | timed_out_subset).nonzero().flatten()
-        if len(env_ids) == 0:
-            return
-        super()._reset_system(env_ids)
+        state_reset_mask = reset_mask & (self.terminated | timed_out_subset)
+        super()._reset_system(state_reset_mask)
 
     def _pre_decimation_step(self):
         super()._pre_decimation_step()
@@ -168,79 +153,69 @@ class MiniCheetahOsc(MiniCheetah):
             (torch.cos(self.oscillators), torch.sin(self.oscillators)), dim=1
         )
 
-    def _resample_commands(self, env_ids):
-        """Randommly select commands of some environments
-
-        Args:
-            env_ids (List[int]): Environments ids for which new commands are needed
-        """
-        if len(env_ids) == 0:
-            return
-        super()._resample_commands(env_ids)
+    def _resample_commands(self, command_mask):
+        """Randomly sample commands for selected environments."""
+        super()._resample_commands(command_mask)
         possible_commands = torch.tensor(
             self.command_ranges["lin_vel_x"], device=self.device
         )
-        self.commands[env_ids, 0:1] = possible_commands[
+        forward = possible_commands[
             torch.randint(
-                0, len(possible_commands), (len(env_ids), 1), device=self.device
+                0,
+                len(possible_commands),
+                (self.num_envs, 1),
+                device=self.device,
             )
         ]
         # add some gaussian noise to the commands
-        self.commands[env_ids, 0:1] += (
-            torch.randn((len(env_ids), 1), device=self.device) * self.cfg.commands.var
+        forward += (
+            torch.randn((self.num_envs, 1), device=self.device) * self.cfg.commands.var
         )
-
-        # possible_commands = torch.tensor(self.command_ranges["lin_vel_y"],
-        #                                  device=self.device)
-        # self.commands[env_ids, 1:2] = possible_commands[torch.randint(
-        #     0, len(possible_commands), (len(env_ids), 1),
-        #     device=self.device)]
-        # possible_commands = torch.tensor(self.command_ranges["yaw_vel"],
-        #                                  device=self.device)
-        # self.commands[env_ids, 0:1] = possible_commands[torch.randint(
-        #     0, len(possible_commands), (len(env_ids), 1),
-        #     device=self.device)]
+        masked_update(self.commands[:, 0:1], forward, command_mask)
 
         if 0 in self.cfg.commands.ranges.lin_vel_x:
             # * with 20% chance, reset to 0 commands except for forward
-            self.commands[env_ids, 1:] *= (
-                torch_rand_float(0, 1, (len(env_ids), 1), device=self.device).squeeze(1)
-                < 0.8
-            ).unsqueeze(1)
+            drop = command_mask.unsqueeze(1) & (
+                torch.rand(self.num_envs, 1, device=self.device) >= 0.8
+            )
+            self.commands[:, 1:].masked_fill_(drop, 0.0)
             # * with 20% chance, reset to 0 commands except for rotation
-            self.commands[env_ids, :2] *= (
-                torch_rand_float(0, 1, (len(env_ids), 1), device=self.device).squeeze(1)
-                < 0.8
-            ).unsqueeze(1)
+            drop = command_mask.unsqueeze(1) & (
+                torch.rand(self.num_envs, 1, device=self.device) >= 0.8
+            )
+            self.commands[:, :2].masked_fill_(drop, 0.0)
             # * with 10% chance, reset to 0
-            self.commands[env_ids, :] *= (
-                torch_rand_float(0, 1, (len(env_ids), 1), device=self.device).squeeze(1)
-                < 0.9
-            ).unsqueeze(1)
+            drop = command_mask.unsqueeze(1) & (
+                torch.rand(self.num_envs, 1, device=self.device) >= 0.9
+            )
+            self.commands.masked_fill_(drop, 0.0)
 
         if self.cfg.osc.randomize_osc_params:
-            self._resample_osc_params(env_ids)
+            self._resample_osc_params(command_mask)
 
-    def _resample_osc_params(self, env_ids):
-        if len(env_ids) > 0:
-            self.osc_omega[env_ids, 0] = torch_rand_float(
-                self.cfg.osc.omega_range[0],
-                self.cfg.osc.omega_range[1],
-                (len(env_ids), 1),
+    def _resample_osc_params(self, command_mask):
+        def sample(bounds):
+            low, high = bounds
+            return low + (high - low) * torch.rand(
+                self.num_envs,
                 device=self.device,
-            ).squeeze(1)
-            self.osc_coupling[env_ids, 0] = torch_rand_float(
-                self.cfg.osc.coupling_range[0],
-                self.cfg.osc.coupling_range[1],
-                (len(env_ids), 1),
-                device=self.device,
-            ).squeeze(1)
-            self.osc_offset[env_ids, 0] = torch_rand_float(
-                self.cfg.osc.offset_range[0],
-                self.cfg.osc.offset_range[1],
-                (len(env_ids), 1),
-                device=self.device,
-            ).squeeze(1)
+            )
+
+        masked_update(
+            self.osc_omega[:, 0],
+            sample(self.cfg.osc.omega_range),
+            command_mask,
+        )
+        masked_update(
+            self.osc_coupling[:, 0],
+            sample(self.cfg.osc.coupling_range),
+            command_mask,
+        )
+        masked_update(
+            self.osc_offset[:, 0],
+            sample(self.cfg.osc.offset_range),
+            command_mask,
+        )
 
     def perturb_base_velocity(self, velocity_delta, env_ids=None):
         if env_ids is None:

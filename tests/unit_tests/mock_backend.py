@@ -130,7 +130,7 @@ class MockBackend(SimBackend):
 
     # ── Reset ─────────────────────────────────────────────────────────────────
 
-    def reset_dof_state(self, env_ids: torch.Tensor) -> None:
+    def reset_dof_state(self, reset_mask: torch.Tensor) -> None:
         """No-op: dof_pos/dof_vel are already live — the caller wrote into
         the views before calling this.  A real backend would commit to the
         physics engine here."""

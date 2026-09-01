@@ -224,6 +224,52 @@ use one persistent mask; the GPU reset path performs no dynamically sized
 selection or index-to-mask conversion; MuJoCo CPU alone derives private local
 indices; and all reset-liveness and sparse-isolation checks pass.
 
+### Milestone 1 result (2026-09-01)
+
+The selection refactor is implemented. The task owns one persistent boolean
+reset mask, active runners fill it in place, episodic DR and task-specific
+resampling consume full-size candidates, and both GPU backends consume the mask
+directly. MuJoCo CPU is the only reset implementation that derives a private
+index list. Sparse reset tests now cover base state, DOF state, commands, Go2
+phase and frequency, PD scales, target/history tensors, and episode length.
+
+The synchronized 4,096-environment A/B on the current committed Go2Trot
+frequencies (100 Hz control, 500 Hz simulation) found no measurable PD-DR
+penalty:
+
+| Backend | Bundle | Steady | Timeout resets | Reset-all stress |
+| --- | --- | ---: | ---: | ---: |
+| VSim | off | 1.050 M | 1.048 M | 1.125 M |
+| VSim | PD | 1.054 M | 1.057 M | 1.130 M |
+| Warp | off | 0.334 M | 0.330 M | 0.351 M |
+| Warp | PD | 0.331 M | 0.330 M | 0.351 M |
+
+These are physics-step rates; each cell used seed 7, 25 warm-up control steps,
+and five 50-control-step trials. PD/off ratios were `1.004`, `1.008`, and
+`1.004` on VSim, and `0.992`, `0.999`, and `1.000` on Warp.
+
+An exact repeat of the Milestone 0 100 Hz simulation protocol exposed a
+separate all-false-mask cost. Relative to the old index implementation, VSim
+PD throughput changed from `1.061/0.859/0.901 M` to
+`0.882/0.881/0.933 M` for steady/timeout/reset-all. The realistic timeout and
+reset-all paths improved by 2.5% and 3.6%, but repeatedly asking the task to
+reset an empty mask was 16.9% slower. An isolated breakdown measured
+`1.053 M` for stepping alone, `1.042 M` with episodic DR only, about `0.99 M`
+with either one VSim state commit, and `0.880 M` with the complete current task
+reset. The cost is therefore the two unconditional state commit/refresh calls,
+not mask sampling or index reconstruction.
+
+The focused Nsight range contains no `nonzero`, masked-select, or scalar-read
+selection kernel. The two existing state commits remain visible and are the
+declared subject of Milestone 3. CPU, Warp, and VSim train/save/inference
+smokes completed with finite states, actions, rewards, and checkpoint tensors.
+
+Milestone 1 implementation and correctness checks are complete. Its original
+no-reset performance clause is not met; retain that result rather than hiding
+it in the production reset profile. Do not begin Milestone 2 until this review
+point is accepted. Milestone 3 must remove the duplicate state commit and
+repeat the all-false discriminator.
+
 ## Milestone 2: full-batch startup DR
 
 Remove selection from startup physical randomization. Milestone 0 showed that
