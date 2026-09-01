@@ -77,9 +77,9 @@ def resolve_ckpt(path):
 
 def set_deterministic_basic_state(env):
     """Make the basic-mode robot state, command, and gait phase device-independent."""
-    env_ids = torch.arange(env.num_envs, device=env.device)
+    reset_mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     with torch.no_grad():
-        env._reset_system(env_ids)
+        env._reset_system(reset_mask)
         for name in ("dof_pos_target", "dof_vel_target", "tau_ff", "dof_pos_history"):
             if hasattr(env, name):
                 getattr(env, name).zero_()
@@ -216,7 +216,9 @@ def apply_parameter_samples(
         )
         stiffness_t = torch.as_tensor(stiffness, device=env.device)
         randomizer.set_episode_scale(
-            "p_gains", torch.arange(num_envs, device=env.device), stiffness_t
+            "p_gains",
+            torch.ones(num_envs, dtype=torch.bool, device=env.device),
+            stiffness_t,
         )
 
     if damping_range is None:
@@ -232,7 +234,9 @@ def apply_parameter_samples(
         )
         damping_t = torch.as_tensor(damping, device=env.device)
         randomizer.set_episode_scale(
-            "d_gains", torch.arange(num_envs, device=env.device), damping_t
+            "d_gains",
+            torch.ones(num_envs, dtype=torch.bool, device=env.device),
+            damping_t,
         )
 
     if link_mass_range is None:

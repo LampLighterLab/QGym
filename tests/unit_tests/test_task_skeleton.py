@@ -25,7 +25,7 @@ class _SimpleTask(TaskSkeleton):
     def step(self):
         pass
 
-    def _reset_idx(self, env_ids):
+    def _reset_idx(self, reset_mask):
         pass
 
 

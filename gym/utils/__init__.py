@@ -28,6 +28,7 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
+from .sampling import masked_update as masked_update
 from .sampling import random_sample as random_sample
 
-__all__ = ["random_sample"]
+__all__ = ["masked_update", "random_sample"]

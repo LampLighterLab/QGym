@@ -10,6 +10,15 @@ from gym import GYM_ROOT_DIR
 from tests.unit_tests.conftest import vsim_guard
 
 
+def _reset_mask(num_envs, device, selected=None):
+    mask = torch.zeros(num_envs, dtype=torch.bool, device=device)
+    if selected is None:
+        mask.fill_(True)
+    else:
+        mask[selected] = True
+    return mask
+
+
 def _domain_randomization_cfg(
     *, contact_friction=None, stiffness=None, damping=None, link_mass=None
 ):
@@ -106,14 +115,14 @@ def _assert_friction_changes_motion(backend):
         torch.tensor([0, 1], device=backend.device),
         torch.tensor([0.2, 0.8], device=backend.device),
     )
-    env_ids = torch.arange(2, device=backend.device)
+    reset_mask = _reset_mask(2, backend.device)
     backend.dof_pos.zero_()
     backend.dof_vel.zero_()
-    backend.reset_dof_state(env_ids)
+    backend.reset_dof_state(reset_mask)
     backend.root_states.zero_()
     backend.root_states[:, 2] = 0.105
     backend.root_states[:, 6] = 1.0
-    backend.reset_root_state(env_ids)
+    backend.reset_root_state(reset_mask)
 
     torques = torch.zeros(2, backend.num_dof, device=backend.device)
     for _ in range(500):
@@ -141,7 +150,7 @@ def _assert_link_mass_changes_acceleration(backend):
 
     backend.dof_pos.zero_()
     backend.dof_vel.zero_()
-    backend.reset_dof_state(torch.arange(2, device=backend.device))
+    backend.reset_dof_state(_reset_mask(2, backend.device))
     backend.step(torch.full((2, backend.num_dof), 0.1, device=backend.device))
     speed = backend.dof_vel[:, 0].abs().cpu()
     assert speed[0] / speed[1] == pytest.approx(2.0, rel=0.05)
@@ -155,6 +164,7 @@ def _build_randomized_task(
     stiffness=None,
     damping=None,
     link_mass=None,
+    reset_mode=None,
 ):
     from gym.envs.mini_cheetah.mini_cheetah import MiniCheetah
     from gym.envs.mini_cheetah.mini_cheetah_config import (
@@ -168,6 +178,8 @@ def _build_randomized_task(
     cfg.env.num_envs = 4
     cfg.seed = 17
     cfg.push_robots.toggle = False
+    if reset_mode is not None:
+        cfg.init_state.reset_mode = reset_mode
     cfg.domain_randomization.startup.contact_friction_range = contact_friction
     cfg.domain_randomization.startup.link_mass_scale_range = link_mass
     cfg.domain_randomization.episode.scale_ranges = {
@@ -195,7 +207,7 @@ def _assert_task_startup_friction_randomization(device, backend_name="mujoco"):
             env.domain_randomizer.contact_friction, expected_initial
         )
 
-        env._reset_idx(torch.tensor([1, 3], device=device))
+        env._reset_idx(_reset_mask(4, device, [1, 3]))
         torch.testing.assert_close(
             env.domain_randomizer.contact_friction, expected_initial
         )
@@ -226,7 +238,7 @@ def _assert_task_pd_randomization(device, backend_name="mujoco"):
         )
         before_p = env.p_gains.clone()
         before_d = env.d_gains.clone()
-        env._reset_idx(torch.tensor([1, 3], device=device))
+        env._reset_idx(_reset_mask(4, device, [1, 3]))
         torch.testing.assert_close(
             env.p_gains,
             nominal_p * env.domain_randomizer.episode_scale("p_gains"),
@@ -262,7 +274,7 @@ def _assert_task_link_mass_randomization(device, backend_name="mujoco"):
         )
         before_mass = env._backend.link_mass.clone()
         before_inertia = env._backend.link_inertia.clone()
-        env._reset_idx(torch.tensor([1, 3], device=device))
+        env._reset_idx(_reset_mask(4, device, [1, 3]))
         torch.testing.assert_close(env._backend.link_mass, before_mass)
         torch.testing.assert_close(env._backend.link_inertia, before_inertia)
     finally:
@@ -300,9 +312,9 @@ def test_mujoco_cpu_applies_friction_per_environment(monkeypatch):
         monkeypatch.setattr(mujoco, "mj_step", record_step)
         monkeypatch.setattr(mujoco, "mj_forward", record_forward)
         monkeypatch.setattr(mujoco, "mj_rnePostConstraint", record_rne)
-        env_ids = torch.arange(2)
-        backend.reset_dof_state(env_ids)
-        backend.reset_root_state(env_ids)
+        reset_mask = _reset_mask(2, "cpu")
+        backend.reset_dof_state(reset_mask)
+        backend.reset_root_state(reset_mask)
         backend.step(torch.zeros(2, backend.num_dof))
         assert active["step"] == pytest.approx([0.2, 0.7])
         assert active["rne"] == pytest.approx([0.2, 0.7])
@@ -394,6 +406,103 @@ def test_mujoco_cpu_task_randomizes_friction_only_at_startup():
 
 def test_mujoco_cpu_task_randomizes_pd_gains_in_common_control_path():
     _assert_task_pd_randomization("cpu")
+
+
+def test_mujoco_cpu_sparse_reset_mask_isolates_task_buffers():
+    env = _build_randomized_task(
+        "cpu",
+        contact_friction=None,
+        reset_mode="reset_to_basic",
+    )
+    try:
+        env.dof_pos[:] = torch.arange(env.num_envs).unsqueeze(1) + 10.0
+        env.dof_vel[:] = torch.arange(env.num_envs).unsqueeze(1) + 20.0
+        env.root_states[:] = torch.arange(env.num_envs).unsqueeze(1) + 30.0
+        env.commands[:] = torch.arange(env.num_envs).unsqueeze(1) + 40.0
+        env.dof_pos_target[:] = torch.arange(env.num_envs).unsqueeze(1) + 50.0
+        env.dof_pos_history[:] = torch.arange(env.num_envs).unsqueeze(1) + 60.0
+        env.episode_length_buf[:] = torch.arange(env.num_envs) + 70
+        before = {
+            name: getattr(env, name).clone()
+            for name in (
+                "dof_pos",
+                "dof_vel",
+                "root_states",
+                "commands",
+                "dof_pos_target",
+                "dof_pos_history",
+                "episode_length_buf",
+            )
+        }
+        reset_mask = _reset_mask(env.num_envs, env.device, [1, 3])
+
+        env._reset_idx(reset_mask)
+
+        untouched = torch.tensor([0, 2])
+        for name, values in before.items():
+            torch.testing.assert_close(getattr(env, name)[untouched], values[untouched])
+        assert torch.equal(
+            env.episode_length_buf,
+            torch.tensor([70, 0, 72, 0]),
+        )
+    finally:
+        env._backend.close()
+
+
+def test_go2trot_sparse_reset_mask_isolates_task_and_gait_buffers():
+    from gym.envs.go2.go2trot import Go2Trot
+    from gym.envs.go2.go2trot_config import Go2TrotCfg, Go2TrotRunnerCfg
+    from gym.utils.task_registry import select_backend, task_registry
+
+    cfg = Go2TrotCfg()
+    runner_cfg = Go2TrotRunnerCfg()
+    cfg.env.num_envs = 4
+    cfg.seed = 17
+    cfg.push_robots.toggle = False
+    cfg.domain_randomization.startup.contact_friction_range = None
+    cfg.domain_randomization.startup.link_mass_scale_range = None
+    task_registry.convert_frequencies_to_params(cfg, runner_cfg)
+    env = Go2Trot(cfg, "cpu", True, select_backend(cfg, "cpu", "mujoco"))
+    try:
+        row = torch.arange(env.num_envs).unsqueeze(1)
+        env.dof_pos[:] = row + 10.0
+        env.dof_vel[:] = row + 20.0
+        env.root_states[:] = row + 30.0
+        env.commands[:] = row + 40.0
+        env.dof_pos_target[:] = row + 50.0
+        env.dof_pos_history[:] = row + 60.0
+        env.phase[:] = row + 70.0
+        env.phase_frequency[:] = row + 80.0
+        env.episode_length_buf[:] = torch.arange(env.num_envs) + 90
+        p_scale = env.domain_randomizer.episode_scale("p_gains")
+        d_scale = env.domain_randomizer.episode_scale("d_gains")
+        before = {
+            name: getattr(env, name).clone()
+            for name in (
+                "dof_pos",
+                "dof_vel",
+                "root_states",
+                "commands",
+                "dof_pos_target",
+                "dof_pos_history",
+                "phase",
+                "phase_frequency",
+                "episode_length_buf",
+            )
+        }
+        before_p = p_scale.clone()
+        before_d = d_scale.clone()
+
+        env._reset_idx(_reset_mask(env.num_envs, env.device, [1, 3]))
+
+        untouched = torch.tensor([0, 2])
+        for name, values in before.items():
+            torch.testing.assert_close(getattr(env, name)[untouched], values[untouched])
+        torch.testing.assert_close(p_scale[untouched], before_p[untouched])
+        torch.testing.assert_close(d_scale[untouched], before_d[untouched])
+        assert torch.equal(env.episode_length_buf, torch.tensor([90, 0, 92, 0]))
+    finally:
+        env._backend.close()
 
 
 def test_mujoco_cpu_link_mass_and_inertia_change_acceleration():

@@ -9,6 +9,19 @@ import pytest
 import torch
 
 
+def _reset_mask(backend, selected=None):
+    mask = torch.zeros(
+        backend.root_states.shape[0],
+        dtype=torch.bool,
+        device=backend.device,
+    )
+    if selected is None:
+        mask.fill_(True)
+    else:
+        mask[selected] = True
+    return mask
+
+
 def _assert_limited_dof_reset_clamps(backend):
     props = backend._make_dof_props(backend._mjm)
     lower = torch.tensor(props["lower"], dtype=torch.float, device=backend.device)
@@ -21,7 +34,7 @@ def _assert_limited_dof_reset_clamps(backend):
     untouched = backend.dof_pos[1:].clone()
 
     backend.dof_pos[0] = requested
-    backend.reset_dof_state(torch.tensor([0], device=backend.device))
+    backend.reset_dof_state(_reset_mask(backend, [0]))
 
     expected = torch.where(
         torch.arange(backend.num_dof, device=backend.device) % 2 == 0,
@@ -35,15 +48,15 @@ def _assert_limited_dof_reset_clamps(backend):
 def _assert_rigid_body_state_is_current_after_step(backend):
     device = backend.device
     num_envs = backend.root_states.shape[0]
-    env_ids = torch.arange(num_envs, device=device)
+    reset_mask = _reset_mask(backend)
     torques = torch.zeros(num_envs, backend.num_dof, device=device)
 
     backend.root_states[:, :3] = torch.tensor([0.0, 0.0, 5.0], device=device)
     backend.root_states[:, 3:7] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device)
     backend.root_states[:, 7:13] = 0.0
     backend.dof_vel.zero_()
-    backend.reset_dof_state(env_ids)
-    backend.reset_root_state(env_ids)
+    backend.reset_dof_state(reset_mask)
+    backend.reset_root_state(reset_mask)
 
     # The first step puts the assembled public body state on a known native
     # state. The second step must expose that step's result, not the first
@@ -193,7 +206,7 @@ class TestLeggedPhysics:
         b = legged_cpu_backend
         # Set initial height
         b.root_states[:, 2] = 0.35
-        b.reset_root_state(torch.arange(4))
+        b.reset_root_state(_reset_mask(b))
         torques = torch.zeros(4, b.num_dof)
         for _ in range(500):
             b.step(torques)
@@ -224,9 +237,9 @@ class TestLeggedPhysics:
         backend.root_states[:, 7:10] = torch.tensor([0.2, -0.1, 0.3])
         backend.root_states[:, 10:13] = torch.tensor([0.4, -0.2, 0.1])
         backend.dof_vel[:] = torch.linspace(-0.5, 0.5, backend.num_dof)
-        env_ids = torch.arange(backend.root_states.shape[0])
-        backend.reset_dof_state(env_ids)
-        backend.reset_root_state(env_ids)
+        reset_mask = _reset_mask(backend)
+        backend.reset_dof_state(reset_mask)
+        backend.reset_root_state(reset_mask)
         backend.step(torch.zeros(4, backend.num_dof))
 
         public_state = backend.rigid_body_states.view(4, backend.num_bodies, 13)[0]
@@ -264,7 +277,7 @@ class TestLeggedReset:
         b = legged_cpu_backend
         b.root_states[0, 2] = 1.0  # set z=1
         b.root_states[0, 3:7] = torch.tensor([0.0, 0.0, 0.0, 1.0])
-        b.reset_root_state(torch.tensor([0]))
+        b.reset_root_state(_reset_mask(b, [0]))
         # One step should keep it roughly near z=1
         b.step(torch.zeros(4, b.num_dof))
         assert b.root_states[0, 2].item() > 0.9
@@ -273,7 +286,7 @@ class TestLeggedReset:
         b = legged_cpu_backend
         b.dof_pos[0, 0] = 0.5
         b.dof_vel[0, :] = 0.0
-        b.reset_dof_state(torch.tensor([0]))
+        b.reset_dof_state(_reset_mask(b, [0]))
         b.step(torch.zeros(4, b.num_dof))
         # Should be close to 0.5 after one step
         assert abs(b.dof_pos[0, 0].item() - 0.5) < 0.1
@@ -353,9 +366,9 @@ class TestLeggedCrossBackend:
 
         # Set identical initial height
         cpu.root_states[:, 2] = 0.35
-        cpu.reset_root_state(torch.arange(N))
+        cpu.reset_root_state(_reset_mask(cpu))
         warp.root_states[:, 2] = 0.35
-        warp.reset_root_state(torch.arange(N, device="cuda:0"))
+        warp.reset_root_state(_reset_mask(warp))
 
         cpu_torques = torch.zeros(N, 12)
         warp_torques = torch.zeros(N, 12, device="cuda:0")

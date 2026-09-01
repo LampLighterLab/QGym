@@ -73,12 +73,12 @@ def default_warmup_steps(num_envs):
 
 
 def make_reset_schedule(profile, num_envs, episode_steps, num_steps, device):
-    """Prebuild reset ID tensors so index construction is outside timing."""
-    empty = torch.empty(0, dtype=torch.long, device=device)
+    """Prebuild persistent-shape reset masks outside the timed region."""
+    empty = torch.zeros(num_envs, dtype=torch.bool, device=device)
     if profile == "none":
         return [empty] * num_steps
     if profile == "all":
-        all_envs = torch.arange(num_envs, dtype=torch.long, device=device)
+        all_envs = torch.ones(num_envs, dtype=torch.bool, device=device)
         return [all_envs] * num_steps
     if profile != "timeout":
         raise ValueError(f"unknown reset profile {profile!r}")
@@ -91,7 +91,9 @@ def make_reset_schedule(profile, num_envs, episode_steps, num_steps, device):
             schedule.append(empty)
             continue
         ids = torch.arange(cursor, cursor + int(count), device=device) % num_envs
-        schedule.append(ids.to(dtype=torch.long))
+        reset_mask = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        reset_mask[ids] = True
+        schedule.append(reset_mask)
         cursor = (cursor + int(count)) % num_envs
     return schedule
 
@@ -180,24 +182,24 @@ def profile_trials(env, backend_label, profile, steps, repeats, warmup_steps):
         profile, env.num_envs, episode_steps, warmup_steps, device
     )
     with trace_range(f"warmup/{profile}", device):
-        for env_ids in warmup_schedule:
+        for reset_mask in warmup_schedule:
             env.step()
-            env._reset_idx(env_ids)
+            env._reset_idx(reset_mask)
         synchronize(backend_label, device)
 
     schedule = make_reset_schedule(profile, env.num_envs, episode_steps, steps, device)
-    reset_count = sum(ids.numel() for ids in schedule)
+    reset_count = sum(int(mask.count_nonzero().item()) for mask in schedule)
     elapsed = []
     checksums = []
-    all_envs = torch.arange(env.num_envs, dtype=torch.long, device=device)
+    all_envs = torch.ones(env.num_envs, dtype=torch.bool, device=device)
     for repeat in range(repeats):
         with trace_range(f"trial/{profile}/{repeat}", device):
             env._reset_idx(all_envs)
             synchronize(backend_label, device)
             start = time.perf_counter()
-            for env_ids in schedule:
+            for reset_mask in schedule:
                 env.step()
-                env._reset_idx(env_ids)
+                env._reset_idx(reset_mask)
             synchronize(backend_label, device)
             elapsed.append(time.perf_counter() - start)
 

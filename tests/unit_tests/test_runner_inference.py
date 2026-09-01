@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import torch
 
 from learning.runners.datalogging_runner import DataLoggingRunner
+from learning.runners.BaseRunner import BaseRunner
 from learning.runners.off_policy_runner import OffPolicyRunner
 from learning.runners.old_policy_runner import OldPolicyRunner
 from learning.runners.on_policy_runner import OnPolicyRunner
@@ -62,3 +63,22 @@ def test_off_policy_inference_does_not_add_observation_noise():
         runner.get_inference_actions(),
         torch.tanh(clean_observation),
     )
+
+
+def test_runner_reuses_task_owned_reset_mask():
+    runner = BaseRunner.__new__(BaseRunner)
+    reset_mask = torch.zeros(4, dtype=torch.bool)
+    received = []
+    runner.env = SimpleNamespace(
+        timed_out=torch.tensor([False, True, False, False]),
+        terminated=torch.tensor([False, False, True, False]),
+        to_be_reset=reset_mask,
+        _reset_idx=received.append,
+    )
+    pointer = reset_mask.data_ptr()
+
+    runner.reset_envs()
+
+    assert runner.env.to_be_reset.data_ptr() == pointer
+    assert received == [reset_mask]
+    assert torch.equal(reset_mask, torch.tensor([False, True, True, False]))

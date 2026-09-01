@@ -38,11 +38,12 @@ def torch_rand_float(lower, upper, shape, device):
 
 
 # @ torch.jit.script
-def random_sample(env_ids, low, high, device):
-    """
-    Generate random samples for each entry of env_ids
-    """
-    rand_pos = torch_rand_float(0, 1, (len(env_ids), len(low)), device=device)
-    diff_pos = (high - low).repeat(len(env_ids), 1)
-    random_dof_pos = rand_pos * diff_pos + low.repeat(len(env_ids), 1)
-    return random_dof_pos
+def random_sample(num_samples, low, high, device):
+    """Generate ``num_samples`` independent rows between tensor bounds."""
+    return torch.rand(num_samples, len(low), device=device) * (high - low) + low
+
+
+def masked_update(target, values, mask):
+    """Update selected leading rows in place without dynamic-size indexing."""
+    condition = mask.reshape(tuple(mask.shape) + (1,) * (target.ndim - mask.ndim))
+    torch.where(condition, values, target, out=target)

@@ -9,8 +9,12 @@ import pytest
 import torch
 
 
-def _env_ids(backend, count: int) -> torch.Tensor:
-    return torch.arange(count, device=backend.device)
+def _reset_mask(backend, count: int) -> torch.Tensor:
+    mask = torch.zeros(
+        backend.dof_pos.shape[0], dtype=torch.bool, device=backend.device
+    )
+    mask[:count] = True
+    return mask
 
 
 def test_public_state_schema_and_metadata(pendulum_backend):
@@ -61,18 +65,18 @@ def test_step_preserves_public_tensor_identity(pendulum_backend):
 
 def test_gravity_and_applied_torque_have_expected_signs(pendulum_backend):
     backend = pendulum_backend
-    env_ids = _env_ids(backend, 4)
+    reset_mask = _reset_mask(backend, 4)
     zero_torques = torch.zeros(4, 1, device=backend.device)
 
     backend.dof_pos[:] = torch.pi / 2
     backend.dof_vel.zero_()
-    backend.reset_dof_state(env_ids)
+    backend.reset_dof_state(reset_mask)
     backend.step(zero_torques)
     assert backend.dof_vel.abs().mean() > 1e-6
 
     backend.dof_pos.zero_()
     backend.dof_vel.zero_()
-    backend.reset_dof_state(env_ids)
+    backend.reset_dof_state(reset_mask)
     backend.step(torch.full((4, 1), 2.0, device=backend.device))
     assert backend.dof_vel[:, 0].mean() > 0
 
@@ -82,7 +86,7 @@ def test_environments_evolve_independently(pendulum_backend_16):
     backend.dof_pos[:8] = 0.0
     backend.dof_pos[8:] = torch.pi / 2
     backend.dof_vel.zero_()
-    backend.reset_dof_state(_env_ids(backend, 16))
+    backend.reset_dof_state(_reset_mask(backend, 16))
 
     torques = torch.zeros(16, 1, device=backend.device)
     for _ in range(20):
@@ -94,11 +98,11 @@ def test_environments_evolve_independently(pendulum_backend_16):
 
 def test_full_and_partial_dof_resets_round_trip(pendulum_backend):
     backend = pendulum_backend
-    env_ids = _env_ids(backend, 4)
+    reset_mask = _reset_mask(backend, 4)
 
     backend.dof_pos[:] = 1.23
     backend.dof_vel[:] = 4.56
-    backend.reset_dof_state(env_ids)
+    backend.reset_dof_state(reset_mask)
     torch.testing.assert_close(
         backend.dof_pos,
         torch.full_like(backend.dof_pos, 1.23),
@@ -116,7 +120,7 @@ def test_full_and_partial_dof_resets_round_trip(pendulum_backend):
     untouched = backend.dof_pos[2:].clone()
     backend.dof_pos[:2] = 0.25
     backend.dof_vel[:2] = 0.0
-    backend.reset_dof_state(torch.tensor([0, 1], device=backend.device))
+    backend.reset_dof_state(_reset_mask(backend, 2))
 
     torch.testing.assert_close(
         backend.dof_pos[:2],
@@ -131,7 +135,7 @@ def test_dof_state_is_synchronized_after_reset(pendulum_backend):
     backend = pendulum_backend
     backend.dof_pos[:] = 2.71
     backend.dof_vel[:] = -0.5
-    backend.reset_dof_state(_env_ids(backend, 4))
+    backend.reset_dof_state(_reset_mask(backend, 4))
 
     state = backend.dof_state.view(4, 1, 2)
     torch.testing.assert_close(state[..., 0], backend.dof_pos)

@@ -9,6 +9,8 @@ import zlib
 
 import torch
 
+from gym.utils.sampling import masked_update
+
 
 DOMAIN_RANDOMIZATION_MODES = (
     "config",
@@ -193,6 +195,7 @@ class DomainRandomizer:
         self._episode_targets = {}
         self._episode_nominals = {}
         self._episode_scales = {}
+        self._episode_candidates = {}
 
     def bind_link_masses(self) -> None:
         if self._link_mass_scale_range is not None:
@@ -204,6 +207,7 @@ class DomainRandomizer:
             self._episode_targets[name] = target
             self._episode_nominals[name] = target.clone()
             self._episode_scales[name] = torch.ones_like(target)
+            self._episode_candidates[name] = torch.empty_like(target)
 
     def episode_scale(self, name: str) -> torch.Tensor | None:
         """Return the current scale tensor, or ``None`` when not configured."""
@@ -212,12 +216,13 @@ class DomainRandomizer:
     def set_episode_scale(
         self,
         name: str,
-        env_ids: torch.Tensor,
+        reset_mask: torch.Tensor,
         scales: torch.Tensor,
     ) -> None:
         target = self._episode_targets[name]
-        self._episode_scales[name][env_ids] = scales
-        target[env_ids] = self._episode_nominals[name][env_ids] * scales
+        applied_scales = self._episode_scales[name]
+        masked_update(applied_scales, scales, reset_mask)
+        torch.mul(self._episode_nominals[name], applied_scales, out=target)
 
     def _sample(
         self,
@@ -257,15 +262,14 @@ class DomainRandomizer:
             self.link_mass_scale[env_ids] = scales
             self._backend.set_link_mass_scale(env_ids, scales)
 
-    def randomize_episode(self, env_ids: torch.Tensor) -> None:
+    def randomize_episode(self, reset_mask: torch.Tensor) -> None:
         """Resample configured task tensors for resetting environments."""
-        if env_ids.numel() == 0:
-            return
         for name, values in self._episode_scale_ranges.items():
-            target = self._episode_targets[name]
-            scales = self._sample(
-                values,
-                (env_ids.numel(), *target.shape[1:]),
-                self._generators[name],
+            low, high = values
+            candidate = self._episode_candidates[name]
+            candidate.uniform_(
+                low,
+                high,
+                generator=self._generators[name],
             )
-            self.set_episode_scale(name, env_ids, scales)
+            self.set_episode_scale(name, reset_mask, candidate)

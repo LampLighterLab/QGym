@@ -743,9 +743,8 @@ class VSimBackend(SimBackend):
 
     # ── Resets (write-then-commit; task wrote desired values into views) ──
 
-    def _commit_state(self, env_ids: torch.Tensor) -> None:
-        self._mask.zero_()
-        self._mask[env_ids] = True
+    def _commit_state(self, reset_mask: torch.Tensor) -> None:
+        self._mask.copy_(reset_mask)
         self._jp_set.copy_(
             self._dof_pos_view.index_select(1, self._native_to_canonical_dof)
         )
@@ -764,16 +763,18 @@ class VSimBackend(SimBackend):
             self._gym.set_joint_velocities(self._jv_set_arr)
         self._refresh_state()
 
-    def reset_dof_state(self, env_ids: torch.Tensor) -> None:
-        self._commit_state(env_ids)
+    def reset_dof_state(self, reset_mask: torch.Tensor) -> None:
+        self._commit_state(reset_mask)
 
-    def reset_root_state(self, env_ids: torch.Tensor) -> None:
+    def reset_root_state(self, reset_mask: torch.Tensor) -> None:
         if not self._has_free_joint:
             return
-        self._commit_state(env_ids)
+        self._commit_state(reset_mask)
 
     def set_all_root_states(self) -> None:
-        self.reset_root_state(torch.arange(self._num_envs, device=self._device))
+        self.reset_root_state(
+            torch.ones(self._num_envs, dtype=torch.bool, device=self._device)
+        )
 
     # ── Rendering / lifecycle ─────────────────────────────────────────────
 

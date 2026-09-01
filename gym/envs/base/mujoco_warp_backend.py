@@ -297,18 +297,34 @@ class MuJocoWarpBackend(MuJocoBackendBase):
 
     # ── Reset ──────────────────────────────────────────────────────────────────
 
-    def reset_dof_state(self, env_ids: torch.Tensor) -> None:
-        env_ids = env_ids.to(device=self._device)
-        canonical_pos = self._clamp_dof_positions(
-            self._dof_pos_view.index_select(0, env_ids)
+    def reset_dof_state(self, reset_mask: torch.Tensor) -> None:
+        mask = reset_mask.unsqueeze(1)
+        clamped_pos = self._clamp_dof_positions(self._dof_pos_view)
+        torch.where(
+            mask,
+            clamped_pos,
+            self._dof_pos_view,
+            out=self._dof_pos_view,
         )
-        canonical_vel = self._dof_vel_view.index_select(0, env_ids)
-        self._dof_pos_view.index_copy_(0, env_ids, canonical_pos)
-        self._qpos_t[env_ids, self._qpos_offset :] = canonical_pos.index_select(
-            1, self._native_to_canonical_dof
+        native_pos = self._dof_pos_view.index_select(
+            1,
+            self._native_to_canonical_dof,
         )
-        self._qvel_t[env_ids, self._qvel_offset :] = canonical_vel.index_select(
-            1, self._native_to_canonical_dof
+        native_vel = self._dof_vel_view.index_select(
+            1,
+            self._native_to_canonical_dof,
+        )
+        torch.where(
+            mask,
+            native_pos,
+            self._qpos_t[:, self._qpos_offset :],
+            out=self._qpos_t[:, self._qpos_offset :],
+        )
+        torch.where(
+            mask,
+            native_vel,
+            self._qvel_t[:, self._qvel_offset :],
+            out=self._qvel_t[:, self._qvel_offset :],
         )
         with self._wp_ctx:
             mjw.forward(self._m, self._d)
@@ -316,18 +332,31 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         # commits it to qpos immediately after and does the full sync.
         self._sync_assembled_states(sync_root=False)
 
-    def reset_root_state(self, env_ids: torch.Tensor) -> None:
+    def reset_root_state(self, reset_mask: torch.Tensor) -> None:
         if not self._has_free_joint:
             return
-        rs = self._root_states_t[env_ids]
-        self._qpos_t[env_ids, :3] = rs[:, :3]
-        self._qpos_t[env_ids, 3:7] = rs[:, 3:7][:, XYZW_TO_WXYZ]
-        self._qvel_t[env_ids, :3] = rs[:, 7:10]
-        self._qvel_t[env_ids, 3:6] = rs[:, 10:13]
+        mask = reset_mask.unsqueeze(1)
+        rs = self._root_states_t
+        torch.where(mask, rs[:, :3], self._qpos_t[:, :3], out=self._qpos_t[:, :3])
+        torch.where(
+            mask,
+            rs[:, 3:7][:, XYZW_TO_WXYZ],
+            self._qpos_t[:, 3:7],
+            out=self._qpos_t[:, 3:7],
+        )
+        torch.where(mask, rs[:, 7:10], self._qvel_t[:, :3], out=self._qvel_t[:, :3])
+        torch.where(
+            mask,
+            rs[:, 10:13],
+            self._qvel_t[:, 3:6],
+            out=self._qvel_t[:, 3:6],
+        )
 
         with self._wp_ctx:
             mjw.forward(self._m, self._d)
         self._sync_assembled_states()
 
     def set_all_root_states(self) -> None:
-        self.reset_root_state(torch.arange(self._num_envs, device=self._device))
+        self.reset_root_state(
+            torch.ones(self._num_envs, dtype=torch.bool, device=self._device)
+        )

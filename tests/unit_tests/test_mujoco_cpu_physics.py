@@ -109,7 +109,7 @@ def _set_lower_half_ics(b, seed: int = 42):
     offsets = (torch.rand(N_ENVS, 1) - 0.5) * math.pi
     b.dof_pos[:] = math.pi + offsets
     b.dof_vel[:] = (torch.rand(N_ENVS, 1) - 0.5) * 4.0  # qdot ∈ [-2, 2]
-    b.reset_dof_state(torch.arange(N_ENVS))
+    b.reset_dof_state(torch.ones(N_ENVS, dtype=torch.bool))
 
 
 def test_damped_motion_dissipates_energy_and_converges(damped_backend):
