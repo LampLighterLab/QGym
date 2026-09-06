@@ -118,11 +118,10 @@ def _assert_friction_changes_motion(backend):
     reset_mask = _reset_mask(2, backend.device)
     backend.dof_pos.zero_()
     backend.dof_vel.zero_()
-    backend.reset_dof_state(reset_mask)
     backend.root_states.zero_()
     backend.root_states[:, 2] = 0.105
     backend.root_states[:, 6] = 1.0
-    backend.reset_root_state(reset_mask)
+    backend.reset_state(reset_mask)
 
     torques = torch.zeros(2, backend.num_dof, device=backend.device)
     for _ in range(500):
@@ -150,7 +149,7 @@ def _assert_link_mass_changes_acceleration(backend):
 
     backend.dof_pos.zero_()
     backend.dof_vel.zero_()
-    backend.reset_dof_state(_reset_mask(2, backend.device))
+    backend.reset_state(_reset_mask(2, backend.device))
     backend.step(torch.full((2, backend.num_dof), 0.1, device=backend.device))
     speed = backend.dof_vel[:, 0].abs().cpu()
     assert speed[0] / speed[1] == pytest.approx(2.0, rel=0.05)
@@ -313,12 +312,11 @@ def test_mujoco_cpu_applies_friction_per_environment(monkeypatch):
         monkeypatch.setattr(mujoco, "mj_forward", record_forward)
         monkeypatch.setattr(mujoco, "mj_rnePostConstraint", record_rne)
         reset_mask = _reset_mask(2, "cpu")
-        backend.reset_dof_state(reset_mask)
-        backend.reset_root_state(reset_mask)
+        backend.reset_state(reset_mask)
         backend.step(torch.zeros(2, backend.num_dof))
         assert active["step"] == pytest.approx([0.2, 0.7])
         assert active["rne"] == pytest.approx([0.2, 0.7])
-        assert active["forward"] == pytest.approx([0.2, 0.7, 0.2, 0.7])
+        assert active["forward"] == pytest.approx([0.2, 0.7])
     finally:
         backend.close()
 

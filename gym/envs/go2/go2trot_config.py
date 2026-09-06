@@ -98,7 +98,7 @@ class Go2TrotCfg(LeggedRobotCfg):
         # * PD Drive parameters:
         stiffness = {"hip": 20.0, "thigh": 20.0, "calf": 20.0}
         damping = {"hip": 0.5, "thigh": 0.5, "calf": 0.5}
-        ctrl_frequency = 50
+        ctrl_frequency = 100
         desired_sim_frequency = 100
         gait_freq = [1.0, 3.0]  # oscillator frequency range [Hz]
         # Cycle offsets define a trot: front-left/rear-right move together,

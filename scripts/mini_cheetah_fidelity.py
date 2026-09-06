@@ -210,7 +210,7 @@ def _set_dof_state(env, dof_pos, dof_vel):
     reset_mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     env.dof_pos.copy_(dof_pos)
     env.dof_vel.copy_(dof_vel)
-    env._backend.reset_dof_state(reset_mask)
+    env._backend.reset_state(reset_mask)
 
 
 def _quat_multiply_xyzw(left, right):
@@ -498,8 +498,7 @@ def run_slide(env, n_steps, settle_steps, initial_speed):
     env.dof_vel.zero_()
     env.root_states[:, 7:13] = 0.0
     env.root_states[:, 7] = initial_speed
-    env._backend.reset_dof_state(reset_mask)
-    env._backend.reset_root_state(reset_mask)
+    env._backend.reset_state(reset_mask)
 
     buffers = _contact_trace_buffers(env, n_steps)
     _record_contact_trace(env, buffers, 0)

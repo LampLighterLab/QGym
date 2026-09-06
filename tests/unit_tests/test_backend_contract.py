@@ -70,13 +70,13 @@ def test_gravity_and_applied_torque_have_expected_signs(pendulum_backend):
 
     backend.dof_pos[:] = torch.pi / 2
     backend.dof_vel.zero_()
-    backend.reset_dof_state(reset_mask)
+    backend.reset_state(reset_mask)
     backend.step(zero_torques)
     assert backend.dof_vel.abs().mean() > 1e-6
 
     backend.dof_pos.zero_()
     backend.dof_vel.zero_()
-    backend.reset_dof_state(reset_mask)
+    backend.reset_state(reset_mask)
     backend.step(torch.full((4, 1), 2.0, device=backend.device))
     assert backend.dof_vel[:, 0].mean() > 0
 
@@ -86,7 +86,7 @@ def test_environments_evolve_independently(pendulum_backend_16):
     backend.dof_pos[:8] = 0.0
     backend.dof_pos[8:] = torch.pi / 2
     backend.dof_vel.zero_()
-    backend.reset_dof_state(_reset_mask(backend, 16))
+    backend.reset_state(_reset_mask(backend, 16))
 
     torques = torch.zeros(16, 1, device=backend.device)
     for _ in range(20):
@@ -96,13 +96,13 @@ def test_environments_evolve_independently(pendulum_backend_16):
     assert separation > 0.05
 
 
-def test_full_and_partial_dof_resets_round_trip(pendulum_backend):
+def test_full_and_partial_resets_round_trip(pendulum_backend):
     backend = pendulum_backend
     reset_mask = _reset_mask(backend, 4)
 
     backend.dof_pos[:] = 1.23
     backend.dof_vel[:] = 4.56
-    backend.reset_dof_state(reset_mask)
+    backend.reset_state(reset_mask)
     torch.testing.assert_close(
         backend.dof_pos,
         torch.full_like(backend.dof_pos, 1.23),
@@ -120,7 +120,7 @@ def test_full_and_partial_dof_resets_round_trip(pendulum_backend):
     untouched = backend.dof_pos[2:].clone()
     backend.dof_pos[:2] = 0.25
     backend.dof_vel[:2] = 0.0
-    backend.reset_dof_state(_reset_mask(backend, 2))
+    backend.reset_state(_reset_mask(backend, 2))
 
     torch.testing.assert_close(
         backend.dof_pos[:2],
@@ -135,7 +135,7 @@ def test_dof_state_is_synchronized_after_reset(pendulum_backend):
     backend = pendulum_backend
     backend.dof_pos[:] = 2.71
     backend.dof_vel[:] = -0.5
-    backend.reset_dof_state(_reset_mask(backend, 4))
+    backend.reset_state(_reset_mask(backend, 4))
 
     state = backend.dof_state.view(4, 1, 2)
     torch.testing.assert_close(state[..., 0], backend.dof_pos)

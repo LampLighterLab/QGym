@@ -97,19 +97,13 @@ class MuJocoWarpBackend(MuJocoBackendBase):
     def rigid_body_states(self) -> torch.Tensor:
         return self._rigid_body_states_t.view(self._num_envs * self._num_bodies, 13)
 
-    def _sync_assembled_states(self, sync_root: bool = True) -> None:
+    def _sync_assembled_states(self) -> None:
         """Refresh the assembled scratch tensors from the zero-copy views.
 
         Must be called whenever the sim state changes (step, resets): the
         task layer caches root_states / rigid_body_states once at init, so
         a lazy getter-side refresh leaves training on frozen observations.
 
-        ``sync_root=False`` skips rebuilding root_states from qpos.  During a
-        reset the task writes the desired root_states into the assembled buffer
-        FIRST and commits it to qpos only in reset_root_state; reset_dof_state
-        runs in between, so rebuilding root_states from the not-yet-committed
-        qpos there would clobber the pending write (floating base spawned at the
-        stale height — found 2026-07-27 via the mini_cheetah drop probe).
         """
         qpos_native = self._qpos_t[:, self._qpos_offset :]
         qvel_native = self._qvel_t[:, self._qvel_offset :]
@@ -119,7 +113,7 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._dof_vel_view.copy_(
             qvel_native.index_select(1, self._canonical_to_native_dof)
         )
-        if self._has_free_joint and sync_root:
+        if self._has_free_joint:
             rs = self._root_states_t
             rs[:, :3] = self._qpos_t[:, :3]
             rs[:, 3:7] = self._qpos_t[:, 3:7][:, WXYZ_TO_XYZW]
@@ -297,7 +291,7 @@ class MuJocoWarpBackend(MuJocoBackendBase):
 
     # ── Reset ──────────────────────────────────────────────────────────────────
 
-    def reset_dof_state(self, reset_mask: torch.Tensor) -> None:
+    def reset_state(self, reset_mask: torch.Tensor) -> None:
         mask = reset_mask.unsqueeze(1)
         clamped_pos = self._clamp_dof_positions(self._dof_pos_view)
         torch.where(
@@ -326,37 +320,35 @@ class MuJocoWarpBackend(MuJocoBackendBase):
             self._qvel_t[:, self._qvel_offset :],
             out=self._qvel_t[:, self._qvel_offset :],
         )
-        with self._wp_ctx:
-            mjw.forward(self._m, self._d)
-        # Preserve the task's pending root_states write — reset_root_state
-        # commits it to qpos immediately after and does the full sync.
-        self._sync_assembled_states(sync_root=False)
-
-    def reset_root_state(self, reset_mask: torch.Tensor) -> None:
-        if not self._has_free_joint:
-            return
-        mask = reset_mask.unsqueeze(1)
-        rs = self._root_states_t
-        torch.where(mask, rs[:, :3], self._qpos_t[:, :3], out=self._qpos_t[:, :3])
-        torch.where(
-            mask,
-            rs[:, 3:7][:, XYZW_TO_WXYZ],
-            self._qpos_t[:, 3:7],
-            out=self._qpos_t[:, 3:7],
-        )
-        torch.where(mask, rs[:, 7:10], self._qvel_t[:, :3], out=self._qvel_t[:, :3])
-        torch.where(
-            mask,
-            rs[:, 10:13],
-            self._qvel_t[:, 3:6],
-            out=self._qvel_t[:, 3:6],
-        )
+        if self._has_free_joint:
+            rs = self._root_states_t
+            torch.where(mask, rs[:, :3], self._qpos_t[:, :3], out=self._qpos_t[:, :3])
+            torch.where(
+                mask,
+                rs[:, 3:7][:, XYZW_TO_WXYZ],
+                self._qpos_t[:, 3:7],
+                out=self._qpos_t[:, 3:7],
+            )
+            torch.where(mask, rs[:, 7:10], self._qvel_t[:, :3], out=self._qvel_t[:, :3])
+            torch.where(
+                mask,
+                rs[:, 10:13],
+                self._qvel_t[:, 3:6],
+                out=self._qvel_t[:, 3:6],
+            )
 
         with self._wp_ctx:
             mjw.forward(self._m, self._d)
         self._sync_assembled_states()
 
     def set_all_root_states(self) -> None:
-        self.reset_root_state(
-            torch.ones(self._num_envs, dtype=torch.bool, device=self._device)
-        )
+        if not self._has_free_joint:
+            return
+        rs = self._root_states_t
+        self._qpos_t[:, :3].copy_(rs[:, :3])
+        self._qpos_t[:, 3:7].copy_(rs[:, 3:7][:, XYZW_TO_WXYZ])
+        self._qvel_t[:, :3].copy_(rs[:, 7:10])
+        self._qvel_t[:, 3:6].copy_(rs[:, 10:13])
+        with self._wp_ctx:
+            mjw.forward(self._m, self._d)
+        self._sync_assembled_states()

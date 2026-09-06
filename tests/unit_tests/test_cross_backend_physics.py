@@ -83,11 +83,11 @@ def test_trajectories_match(cpu_and_warp_backends):
     # Set identical ICs on both backends
     cpu.dof_pos[:] = pos_ic
     cpu.dof_vel[:] = vel_ic
-    cpu.reset_dof_state(torch.ones(N_ENVS, dtype=torch.bool))
+    cpu.reset_state(torch.ones(N_ENVS, dtype=torch.bool))
 
     warp.dof_pos[:] = pos_ic.to(warp.device)
     warp.dof_vel[:] = vel_ic.to(warp.device)
-    warp.reset_dof_state(torch.ones(N_ENVS, dtype=torch.bool, device=warp.device))
+    warp.reset_state(torch.ones(N_ENVS, dtype=torch.bool, device=warp.device))
 
     cpu_torques = torch.zeros(N_ENVS, 1)
     warp_torques = torch.zeros(N_ENVS, 1, device=warp.device)

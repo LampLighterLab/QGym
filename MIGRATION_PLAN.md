@@ -45,8 +45,8 @@ Core invariants:
 - Public state tensors are valid after setup and refreshed in place after
   every step and reset.
 - `dof_pos` and `dof_vel` are writable views into persistent `dof_state`.
-- Root and DOF resets follow write-then-commit ordering without clobbering a
-  pending root-state write.
+- Root and DOF state is written first and committed atomically through one
+  backend reset operation.
 - Task-facing quaternions are scalar-last `[x, y, z, w]`.
 - Public DOFs, bodies, torques, contacts, and state tensors use canonical
   `RobotLayout` order.
@@ -259,14 +259,14 @@ and the package no longer exports unreachable implementations.
 
 ## Domain randomization progression
 
-1. **Complete:** backend-neutral seeded sampling and independent episode-reset
-   contact friction. Native routing, partial-reset isolation, full-task flow,
-   and a predicted sliding threshold have been exercised on all three backend
-   paths.
+1. **Complete:** backend-neutral seeded startup sampling for physical friction,
+   link mass, and inertia. Native routing, full-task flow, and predicted
+   physics invariants have been exercised on all three backend paths.
 2. **Complete:** backend-neutral stiffness and damping scaling from stored
    nominal gains.
-3. **Complete:** physically consistent link mass and inertia scaling, including
-   derived engine constants and body-weight-dependent reward normalization.
+3. **Complete:** physically consistent startup link mass and inertia scaling,
+   including derived engine constants and body-weight-dependent reward
+   normalization.
 4. Add measured delay, bias, and noise axes only with explicit schedules.
 5. Keep motor-strength scaling low priority; if added, apply it to final torque
    rather than treating PD gain uncertainty as equivalent.
