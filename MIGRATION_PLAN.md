@@ -83,6 +83,19 @@ bash scripts/run_vsim_tests.sh
 A deselected or skipped hardware group is not passing evidence. Record the
 device, backend, seed, environment count, and exact executed tests.
 
+On 2026-09-06, the local VSim dependency was upgraded from `0.3.12` to
+`0.3.14+cu130`, matching the locked CUDA 13.0 PyTorch build. Import/license
+preflight and all 29 licensed VSim tests passed on the RTX 5080. The portable
+suite (223 tests), colocated suites (38 tests), Ruff, and package build also
+passed. A Go2Trot smoke with all configured DR axes, seed 7, 4,096 environments,
+100 Hz control/physics, 16 rollout steps per environment, and two PPO updates
+produced finite metrics and checkpoint tensors under
+`logs/vsim0314_upgrade_smoke/Sep06_17-59-14_/`. The headless smoke emitted
+unresolved visual DAE resource warnings; viewer assets were not validated.
+This establishes upgrade compatibility. The suspected normalization regression
+with DR environment sets and full policy transfer remain separate checks;
+earlier campaign results retain their original engine version.
+
 ### Repository gate
 
 ```bash

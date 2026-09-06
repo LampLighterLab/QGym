@@ -1,12 +1,13 @@
 # thirdparty/vlearn — vsim engine drop zone
 
 The vsim backend's engine (`vlearn`) is closed-source and licensed; its
-binaries cannot be committed (100 KB file cap + licensing). This directory
-holds the machine-local pieces, all gitignored:
+binaries cannot be committed (100 KB file cap + licensing). The `vlearn/`
+subdirectory holds the machine-local pieces, all gitignored:
 
-- `vlearn-<version>-cp311-cp311-linux_x86_64.whl` — the engine wheel
+- `vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl` — the selected engine wheel
   (from the vendor / the vlearn SDK repo). `[tool.uv.sources]` in
   pyproject.toml points here; install with `uv sync --locked --extra vsim`.
+  The CUDA 13.0 variant matches the locked Linux PyTorch build.
 - `License.key` — your node-locked license key (one line); found via
   `VL_LICENSE_KEY_PATH` (set in `.env.vsim`).
 - `TurboActivate.dat` — vendor-shipped product-definition file (copied from
