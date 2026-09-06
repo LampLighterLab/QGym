@@ -25,7 +25,7 @@ XYZW_TO_WXYZ = [3, 0, 1, 2]
 class MuJocoBackendBase(SimBackend):
     """Abstract base with shared MuJoCo setup logic.
 
-    Subclasses must implement: _allocate_tensors(), step(), reset_dof_state(),
+    Subclasses must implement: _allocate_tensors(), step(), reset_state(),
     and the state tensor properties (dof_pos, dof_vel, dof_state, root_states,
     rigid_body_states, contact_forces).
     """

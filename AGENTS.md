@@ -93,9 +93,9 @@ specification.
 - `dof_state` is `[num_envs * num_dof, 2]`; `dof_pos` and `dof_vel` are live,
   writable views into persistent public state. An engine may use private native
   buffers, but it must gather/scatter through persistent canonical buffers.
-- Resets use write-then-commit semantics. Task code writes public state, then
-  calls `reset_dof_state()` and `reset_root_state()`. Preserve pending root
-  writes when a DOF reset occurs first.
+- Resets use one atomic write-then-commit operation. Task code writes public
+  DOF and root state, then calls `reset_state(reset_mask)` once. Each backend
+  commits the complete selected state and performs one native forward/refresh.
 - The task-facing quaternion convention is scalar-last `[x, y, z, w]`.
   Engine-specific ordering conversions belong only at the backend boundary.
 - Public DOFs, bodies, actions, contacts, and state tensors use

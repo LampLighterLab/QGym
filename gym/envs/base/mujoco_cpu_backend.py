@@ -242,7 +242,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
 
     # ── Reset ──────────────────────────────────────────────────────────────────
 
-    def reset_dof_state(self, reset_mask: torch.Tensor) -> None:
+    def reset_state(self, reset_mask: torch.Tensor) -> None:
         qoff = self._qpos_offset
         voff = self._qvel_offset
         for i in reset_mask.nonzero(as_tuple=False).flatten().tolist():
@@ -256,12 +256,18 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             self._datas[i].qvel[voff:] = (
                 self._dof_vel_view[i].cpu().numpy()[self._native_to_canonical_dof_np]
             )
+            if self._has_free_joint:
+                rs = self._root_states_t[i].cpu()
+                self._datas[i].qpos[:3] = rs[:3].numpy()
+                self._datas[i].qpos[3:7] = rs[3:7][XYZW_TO_WXYZ].numpy()
+                self._datas[i].qvel[:3] = rs[7:10].numpy()
+                self._datas[i].qvel[3:6] = rs[10:13].numpy()
             mujoco.mj_forward(model, self._datas[i])
 
-    def reset_root_state(self, reset_mask: torch.Tensor) -> None:
+    def set_all_root_states(self) -> None:
         if not self._has_free_joint:
             return
-        for i in reset_mask.nonzero(as_tuple=False).flatten().tolist():
+        for i in range(self._num_envs):
             self._activate_domain(i)
             model = self._model_for_env(i)
             rs = self._root_states_t[i].cpu()
@@ -270,9 +276,6 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             self._datas[i].qvel[:3] = rs[7:10].numpy()
             self._datas[i].qvel[3:6] = rs[10:13].numpy()
             mujoco.mj_forward(model, self._datas[i])
-
-    def set_all_root_states(self) -> None:
-        self.reset_root_state(torch.ones(self._num_envs, dtype=torch.bool))
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 

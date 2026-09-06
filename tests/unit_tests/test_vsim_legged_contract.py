@@ -97,7 +97,7 @@ class TestLeggedReset:
         b.root_states[:, :3] = torch.tensor([0.0, 0.0, 1.0], device=b.device)
         b.root_states[:, 3:7] = torch.tensor([0, 0, 0, 1.0], device=b.device)
         b.root_states[:, 7:13] = 0.0
-        b.reset_root_state(torch.ones(4, dtype=torch.bool, device=b.device))
+        b.reset_state(torch.ones(4, dtype=torch.bool, device=b.device))
         b.step(torch.zeros(4, 12, device=b.device))
         assert (b.root_states[:, 2] > 0.9).all()
 
@@ -105,7 +105,7 @@ class TestLeggedReset:
         b = legged_vsim_backend
         b.dof_pos[:] = 0.5
         b.dof_vel[:] = 0.0
-        b.reset_dof_state(torch.ones(4, dtype=torch.bool, device=b.device))
+        b.reset_state(torch.ones(4, dtype=torch.bool, device=b.device))
         assert (b.dof_pos - 0.5).abs().max() < 0.1
 
     def test_partial_root_reset(self, legged_vsim_backend):
@@ -113,6 +113,6 @@ class TestLeggedReset:
         before = b.root_states.clone()
         b.root_states[:2, 2] = 2.0
         reset_mask = torch.tensor([True, True, False, False], device=b.device)
-        b.reset_root_state(reset_mask)
+        b.reset_state(reset_mask)
         assert (b.root_states[:2, 2] - 2.0).abs().max() < 1e-4
         assert torch.allclose(b.root_states[2:], before[2:], atol=1e-5)

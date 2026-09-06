@@ -282,8 +282,7 @@ class LeggedRobot(BaseTask):
             )
         masked_update(self.root_states[:, :3], root_position, reset_mask)
 
-        self._backend.reset_dof_state(reset_mask)
-        self._backend.reset_root_state(reset_mask)
+        self._backend.reset_state(reset_mask)
 
     # * implement reset methods
     def reset_to_basic(self, reset_mask):

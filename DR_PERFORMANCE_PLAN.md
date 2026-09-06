@@ -375,6 +375,25 @@ Exit gate: every backend exposes one complete-state reset operation, root and
 DOF writes remain live and correctly ordered, and no backend performs duplicate
 forward/refresh work for a single task reset.
 
+### Milestone 3 result (2026-09-02)
+
+The backend contract now exposes one `reset_state(reset_mask)` transaction.
+Legged and fixed-base tasks call it once; VSim performs one `_commit_state`,
+MuJoCo Warp performs one `mjw.forward` and public-state refresh, and MuJoCo CPU
+performs one `mj_forward` per selected environment. The root-only push path
+remains separate.
+
+The exact 4,096-environment, 100 Hz Milestone 1 discriminator improved on
+VSim from `0.882/0.881/0.933 M` to `0.933/0.935/0.987 M` environment-steps/s
+for steady/timeout/reset-all profiles: gains of 5.8%, 6.1%, and 5.8%. PD/off
+ratios were `1.000`, `1.000`, and `0.997`. Warp PD/off ratios were `1.005`,
+`0.997`, and `0.999`, so episodic PD sampling remains within the 2% target.
+
+Shared CPU, Warp, and VSim reset contracts pass, including sparse selection,
+joint-limit clamping, configured floating-base height, state liveness, and
+canonical routing. The CPU friction regression now explicitly observes one
+native forward per selected environment. Milestone 3 exit gate: **met**.
+
 Logger episode compaction and storage statistics also use dynamic selections
 today. They are not DR semantics and remain outside these milestones. Profile
 them separately and create a focused learning-stack change if they remain a
@@ -459,9 +478,9 @@ evidence.
 Keep the work reviewable in this order:
 
 1. profiling protocol only;
-2. full-batch startup API;
-3. episodic mask application;
-4. task/backend reset contract;
+2. episodic mask application;
+3. task/backend reset contract;
+4. full-batch startup API;
 5. performance evidence and documentation;
 6. optional physical-domain pool as a separate feature decision.
 

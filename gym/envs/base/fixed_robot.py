@@ -259,7 +259,7 @@ class FixedRobot(BaseTask):
 
     def _reset_system(self, reset_mask):
         self._reset_state(reset_mask)
-        self._backend.reset_dof_state(reset_mask)
+        self._backend.reset_state(reset_mask)
 
     # ── Reset modes ─────────────────────────────────────────────────────────
 

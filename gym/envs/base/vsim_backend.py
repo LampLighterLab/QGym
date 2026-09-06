@@ -763,16 +763,13 @@ class VSimBackend(SimBackend):
             self._gym.set_joint_velocities(self._jv_set_arr)
         self._refresh_state()
 
-    def reset_dof_state(self, reset_mask: torch.Tensor) -> None:
-        self._commit_state(reset_mask)
-
-    def reset_root_state(self, reset_mask: torch.Tensor) -> None:
-        if not self._has_free_joint:
-            return
+    def reset_state(self, reset_mask: torch.Tensor) -> None:
         self._commit_state(reset_mask)
 
     def set_all_root_states(self) -> None:
-        self.reset_root_state(
+        if not self._has_free_joint:
+            return
+        self._commit_state(
             torch.ones(self._num_envs, dtype=torch.bool, device=self._device)
         )
 
