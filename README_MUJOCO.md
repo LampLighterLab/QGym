@@ -86,16 +86,20 @@ uv run --frozen scripts/train.py --task mini_cheetah --device cuda:0 \
 
 ### Optional vsim setup
 
-vsim is a closed-source, node-locked backend. It additionally requires Linux,
-an NVIDIA GPU, the system `libczmq4` package, and vendor files that cannot be
-committed to this repository.
+vsim is a closed-source, node-locked backend. Its wheel requires Linux x86_64
+and Python 3.11, plus an NVIDIA GPU, the system `libczmq4` package, and vendor
+files that cannot be committed to this repository.
 
 Place these files under `thirdparty/vlearn/` as described in
-[`thirdparty/vlearn/README.md`](thirdparty/vlearn/README.md):
+[`thirdparty/README.md`](thirdparty/README.md):
 
-- `vlearn-0.3.12-cp311-cp311-linux_x86_64.whl`
+- `vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl`
 - `License.key`
 - `TurboActivate.dat`
+
+The selected wheel targets CUDA 13.0, matching the locked Linux PyTorch build.
+Keep the vendor wheel local; its path and hash are recorded in `pyproject.toml`
+and `uv.lock`.
 
 Install the VSim extra from the repository root:
 
