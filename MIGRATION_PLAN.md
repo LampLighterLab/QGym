@@ -14,9 +14,9 @@ projectiles are outside the current scope.
 
 Domain randomization implements startup contact friction and link mass/inertia,
 plus episode-level PD-gain scaling on MuJoCo CPU, MuJoCo Warp, and VSim.
-`DR.md` defines the semantics, evidence, and remaining progression. The next
-priority is correcting and verifying the angular-velocity state contract before
-collecting further DR policy evidence; historical throughput results alone do
+`DR.md` defines the semantics, evidence, and remaining progression. The angular-
+velocity contract and CPU reset-state caches are corrected. The next priority
+is a reduced 100 Hz baseline/DR pilot; historical throughput results alone do
 not establish robustness or transfer.
 A deterministic MuJoCo 3.11 crash on a valid fallen Go2 pose was isolated to
 general convex multi-contact CCD; Go2 disables that path and retains primitive
@@ -32,20 +32,88 @@ regression. Do not reintroduce legacy engine-specific callbacks.
    **100 Hz** with rotated poses, independent native/rotation-increment oracles,
    selective resets, cached tensors, and real Go2Trot observations. VSim serves
    as an unchanged contract reference.
-2. Close the separate MuJoCo CPU reset-liveness gap: native state is forwarded
-   on reset, but cached public rigid-body state is not refreshed until stepping.
-   Keep this correction separately reviewable from the angular-frame fix.
-3. Reevaluate an unchanged VSim checkpoint on corrected MuJoCo with fixed nominal
-   standing, translation, yaw, and combined commands. Report per-command survival,
-   tracking, and observation discrepancies before attributing remaining transfer
-   failure to contact physics or DR. Retrain nominal MuJoCo baselines from scratch.
-4. Freeze a fresh 100 Hz pilot with source hashes, applied parameter arrays,
+2. **Complete:** close the separate MuJoCo CPU reset-liveness gap. Setup and
+   root/reset commits publish current DOF, root, body, and contact state. Sparse
+   resets forward/refresh only selected environments; empty masks do no work.
+3. **Running:** retrain nominal CPU/Warp/VSim baselines from scratch and evaluate
+   their cross-backend transfer with fixed standing, translation, yaw, and combined
+   commands. Report per-command survival and tracking before attributing remaining
+   transfer failure to contact physics or DR. An older VSim policy remains an
+   available diagnostic reference, not a required training restart.
+4. **Frozen:** a fresh 100 Hz pilot with source hashes, applied parameter arrays,
    training support, held-out domains, rollout geometry, seeds, and checkpoint
    selection. Preserve old manifests rather than resuming them across the fix.
 5. Evaluate the paired nominal/DR checkpoints as they become available. Expand
    only after finite training and coherent physical behavior; require three
    complete paired seeds for promotion. Set pooling remains a separate, explicit
    performance/DR-sampling decision, informed by the vendor benchmark.
+
+### Reduced restart at 100 Hz
+
+The restart uses five fresh Go2Trot training cells: CPU nominal, Warp nominal,
+VSim nominal, Warp all-DR, and VSim all-DR. Each uses seed 7, 500 iterations,
+4,096 environments, 65,536 rollout samples (16 steps/environment), 32,768-sample
+optimizer minibatches, and 32 gradient steps. Physics and control are both
+100 Hz. The user's source-config iteration limit of 550 remains unchanged;
+the campaign explicitly overrides it with 500.
+
+Checkpoints 100 and 250 receive native nominal and combined-in-range evaluation;
+checkpoint 500 receives both domains on all three backends. This is 50
+evaluation cells with 200 environments, ten balanced command cases, and five
+seconds per evaluation. CPU full-DR training is excluded; the small CPU
+evaluation cells still check cross-backend transfer. Runtime benchmark cells
+are omitted. Evaluations are scheduled after their training cell finishes,
+without waiting for the CPU training run to finish first.
+
+In-range domains now derive from the frozen training config: friction
+`[0.5, 1.0]`, stiffness `[0.9, 1.1]`, damping `[0.8, 1.2]`, and link mass/inertia
+`[0.9, 1.2]`. Earlier evaluation constants under-covered damping and mass.
+This single-seed pilot can expose regressions and justify further work; it
+cannot establish a DR winner or replace the three-seed promotion gate.
+
+```bash
+uv run --frozen --env-file .env.vsim \
+  scripts/run_full_domain_randomization_campaign.py \
+  --output logs/baselines_100hz_20260906 \
+  --backends cpu warp vsim --bundles off all --exclude-training cpu:all \
+  --skip-speed --seeds 7 --train-num-envs 4096 --train-iterations 500 \
+  --save-interval 50 --checkpoints 100 250 500 \
+  --eval-domains nominal combined_in --cpu-workers 2 \
+  --stages train eval summarize --evaluate-after-training
+```
+
+The manifest freezes source/config hashes and the reduced cell plan. Schema 2
+adds explicit training exclusions, speed-stage inclusion, and evaluation
+scheduling. Old campaigns remain historical; do not resume them across these
+corrections.
+
+The campaign started under `logs/baselines_100hz_20260906/`; its `manifest.json`
+and `summary.json` are the live status sources. The detached controller launch
+record and stdout are under `logs/baselines_100hz_20260906_control/`. CPU and
+Warp nominal runs were both observed advancing with finite optimizer metrics.
+
+### CPU reset-state cache correction
+
+Setup, atomic resets, and root-only updates now copy current native state into
+the persistent public buffers immediately. Each selected reset performs one
+native forward and contact-force assembly, followed by one environment's cache
+copy. Empty masks perform no native work, and unselected native/public state
+remains unchanged. The physics-step staging is unchanged.
+
+Seven new 100 Hz regressions cover setup, immediate root/body/DOF/contact state,
+root-only writes, sparse-reset isolation, and native call counts. Five failed
+before the correction. The full portable gate now passes 257 tests, the
+colocated suites pass 38, and the focused GPU checks pass five Warp and
+15 VSim cases. Ruff and package build pass. A nominal eight-environment CPU
+smoke completed two updates and a deterministic evaluation at 100 Hz. These
+are integration checks, not the 500-iteration baseline results. Logs are in
+`logs/cpu_reset_liveness_20260906/` and `logs/cpu_reset_smoke_20260906/`.
+
+Cleanup removed approximately 4.5 MB of generated build/cache files and the
+superseded Ant `initial_dr_smoke`/`initial_summary_check` outputs. The removal
+inventory is `logs/cleanup_20260906/removed.json`. Historical campaign data,
+checkpoints, referenced experiment workers, and the final vendor submission
+remain available.
 
 ## Architecture
 

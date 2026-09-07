@@ -311,9 +311,27 @@ normalization at 100 Hz:
 bash scripts/run_vsim_tests.sh -k vsim_domain_randomization_regression
 ```
 
-### Run the full domain-randomization campaign
+### Run a domain-randomization campaign
 
-The resumable campaign compares DR off, friction only, PD gains only, link
+For a reduced 100 Hz restart after the backend frame/reset corrections:
+
+```bash
+uv run --frozen --env-file .env.vsim \
+    scripts/run_full_domain_randomization_campaign.py \
+    --output logs/baselines_100hz_20260906 \
+    --backends cpu warp vsim --bundles off all --exclude-training cpu:all \
+    --skip-speed --seeds 7 --train-iterations 500 --checkpoints 100 250 500 \
+    --eval-domains nominal combined_in --cpu-workers 2 \
+    --stages train eval summarize --evaluate-after-training
+```
+
+This trains five cells: nominal CPU/Warp/VSim and full DR on Warp/VSim, with
+50 evaluations. Each completed training cell releases its evaluations without
+waiting for all training to finish. In-range evaluation follows the saved
+training parameter ranges. This single-seed screen is preliminary; see
+`MIGRATION_PLAN.md` for the protocol and promotion gates.
+
+The default full campaign compares DR off, friction only, PD gains only, link
 mass only, and all axes across MuJoCo CPU, MuJoCo Warp, and VSim. It trains
 three seeds through iteration 1000, preserves checkpoints at 100, 250, 500,
 750, and 1000, and evaluates intermediate and final policies in controlled
@@ -323,7 +341,7 @@ workstation.
 ```bash
 uv run --env-file .env.vsim \
     scripts/run_full_domain_randomization_campaign.py \
-    --output logs/dr_full_new
+    --output logs/dr_full_fresh
 ```
 
 Resume a campaign after interruption with `--resume` only while its execution
@@ -332,7 +350,7 @@ rather than mixing incompatible evidence. Follow progress and view completed
 results while it runs with:
 
 ```bash
-Q2_DR_CAMPAIGN_DIR=logs/dr_full_20260813_nj256 \
+Q2_DR_CAMPAIGN_DIR=logs/baselines_100hz_20260906 \
     uv run --frozen marimo edit notebooks/go2_domain_randomization_campaign.py
 ```
 

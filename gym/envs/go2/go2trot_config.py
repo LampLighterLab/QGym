@@ -298,5 +298,5 @@ class Go2TrotRunnerCfg(LeggedRobotRunnerCfg):
     class runner(LeggedRobotRunnerCfg.runner):
         run_name = ""
         experiment_name = "go2trot"
-        max_iterations = 1000
+        max_iterations = 550
         algorithm_class_name = "PPO2"
