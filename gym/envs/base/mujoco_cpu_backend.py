@@ -185,6 +185,12 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             self._datas = [mujoco.MjData(model) for model in self._models]
         else:
             self._datas = [mujoco.MjData(mjm) for _ in range(num_envs)]
+        for i, data in enumerate(self._datas):
+            self._activate_domain(i)
+            model = self._model_for_env(i)
+            mujoco.mj_forward(model, data)
+            mujoco.mj_rnePostConstraint(model, data)
+            self._copy_env_state_from_mujoco(i)
 
     # ── Per-step ───────────────────────────────────────────────────────────────
 
@@ -198,10 +204,6 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self._sync_state_from_mujoco()
 
     def _sync_state_from_mujoco(self) -> None:
-        qoff = self._qpos_offset
-        voff = self._qvel_offset
-        dof_order = self._canonical_to_native_dof_np
-        body_order = self._canonical_to_native_body_np
         for i, d in enumerate(self._datas):
             self._activate_domain(i)
             # cfrc_ext is only populated with constraint/contact forces by
@@ -215,35 +217,52 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             mujoco.mj_kinematics(model, d)
             mujoco.mj_comPos(model, d)
             mujoco.mj_comVel(model, d)
-            self._dof_pos_view[i] = torch.from_numpy(d.qpos[qoff:][dof_order].copy())
-            self._dof_vel_view[i] = torch.from_numpy(d.qvel[voff:][dof_order].copy())
-            self._contact_forces_t[i] = torch.from_numpy(
-                d.cfrc_ext[body_order, 3:6].copy()
-            )
-            # Rigid body states
-            rbs = self._rigid_body_states_t[i]
-            rbs[:, 0:3] = torch.from_numpy(d.xpos[body_order].copy())
-            mj_quat = torch.from_numpy(d.xquat[body_order].copy())
-            rbs[:, 3:7] = mj_quat[:, WXYZ_TO_XYZW]
-            angular_velocity = d.cvel[body_order, 0:3]
-            root_com = d.subtree_com[model.body_rootid[body_order]]
-            body_offset = d.xpos[body_order] - root_com
-            linear_velocity = d.cvel[body_order, 3:6] - np.cross(
-                body_offset, angular_velocity
-            )
-            rbs[:, 7:10] = torch.from_numpy(linear_velocity.copy())
-            rbs[:, 10:13] = torch.from_numpy(angular_velocity.copy())
+            self._copy_env_state_from_mujoco(i)
+
+    def _copy_env_state_from_mujoco(self, env_id: int) -> None:
+        """Copy already-refreshed native state into one environment's live views.
+
+        Reset's forward pass has current body kinematics; step refreshes those
+        separately after integration. Both paths populate contact forces with
+        rnePostConstraint before copying. Keeping this copy local lets partial
+        resets preserve every unselected native state and public cache.
+        """
+        d = self._datas[env_id]
+        model = self._model_for_env(env_id)
+        dof_order = self._canonical_to_native_dof_np
+        body_order = self._canonical_to_native_body_np
+        self._dof_pos_view[env_id] = torch.from_numpy(
+            d.qpos[self._qpos_offset :][dof_order].copy()
+        )
+        self._dof_vel_view[env_id] = torch.from_numpy(
+            d.qvel[self._qvel_offset :][dof_order].copy()
+        )
+        self._contact_forces_t[env_id] = torch.from_numpy(
+            d.cfrc_ext[body_order, 3:6].copy()
+        )
+        rbs = self._rigid_body_states_t[env_id]
+        rbs[:, 0:3] = torch.from_numpy(d.xpos[body_order].copy())
+        mj_quat = torch.from_numpy(d.xquat[body_order].copy())
+        rbs[:, 3:7] = mj_quat[:, WXYZ_TO_XYZW]
+        angular_velocity = d.cvel[body_order, 0:3]
+        root_com = d.subtree_com[model.body_rootid[body_order]]
+        body_offset = d.xpos[body_order] - root_com
+        linear_velocity = d.cvel[body_order, 3:6] - np.cross(
+            body_offset, angular_velocity
+        )
+        rbs[:, 7:10] = torch.from_numpy(linear_velocity.copy())
+        rbs[:, 10:13] = torch.from_numpy(angular_velocity.copy())
         if self._has_free_joint:
-            for i, d in enumerate(self._datas):
-                self._root_states_t[i, :3] = torch.from_numpy(d.qpos[:3].copy())
-                mj_quat = torch.from_numpy(d.qpos[3:7].copy())
-                self._root_states_t[i, 3:7] = mj_quat[WXYZ_TO_XYZW]
-                self._root_states_t[i, 7:10] = torch.from_numpy(d.qvel[:3].copy())
-                # Free-joint translation is world-frame, but angular qvel is
-                # body-local. Public root velocities are both world-frame.
-                self._root_states_t[i, 10:13] = quat_apply(
-                    mj_quat[WXYZ_TO_XYZW], torch.from_numpy(d.qvel[3:6].copy())
-                )
+            rs = self._root_states_t[env_id]
+            rs[:3] = torch.from_numpy(d.qpos[:3].copy())
+            mj_quat = torch.from_numpy(d.qpos[3:7].copy())
+            rs[3:7] = mj_quat[WXYZ_TO_XYZW]
+            rs[7:10] = torch.from_numpy(d.qvel[:3].copy())
+            # Free-joint translation is world-frame, but angular qvel is
+            # body-local. Public root velocities are both world-frame.
+            rs[10:13] = quat_apply(
+                mj_quat[WXYZ_TO_XYZW], torch.from_numpy(d.qvel[3:6].copy())
+            )
 
     # ── Reset ──────────────────────────────────────────────────────────────────
 
@@ -271,6 +290,8 @@ class MuJocoCPUBackend(MuJocoBackendBase):
                     rs[3:7], rs[10:13]
                 ).numpy()
             mujoco.mj_forward(model, self._datas[i])
+            mujoco.mj_rnePostConstraint(model, self._datas[i])
+            self._copy_env_state_from_mujoco(i)
 
     def set_all_root_states(self) -> None:
         if not self._has_free_joint:
@@ -284,6 +305,8 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             self._datas[i].qvel[:3] = rs[7:10].numpy()
             self._datas[i].qvel[3:6] = quat_rotate_inverse(rs[3:7], rs[10:13]).numpy()
             mujoco.mj_forward(model, self._datas[i])
+            mujoco.mj_rnePostConstraint(model, self._datas[i])
+            self._copy_env_state_from_mujoco(i)
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
