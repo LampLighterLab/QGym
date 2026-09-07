@@ -277,6 +277,40 @@ produce both basic and randomized evaluations. Checkpoints must match the
 current task's observation and network schema; an old incompatible checkpoint
 is rejected during loading instead of being partially evaluated.
 
+### Measure VSim environment-set overhead
+
+Use the nominal Go2Trot topology benchmark to separate native simulation,
+state refresh, tensor assembly, and empty-reset costs. It fixes both control
+and physics to **100 Hz** and varies set sharing while keeping physical DR
+disabled and all physical parameters nominal:
+
+```bash
+uv run --frozen --env-file .env.vsim -m scripts.benchmark_vsim_environment_sets \
+    --num-envs 4096 --sets 1 --output logs/vsim_sets/one_set.json
+uv run --frozen --env-file .env.vsim -m scripts.benchmark_vsim_environment_sets \
+    --num-envs 4096 --sets 64 --output logs/vsim_sets/64_sets.json
+uv run --frozen --env-file .env.vsim -m scripts.benchmark_vsim_environment_sets \
+    --num-envs 4096 --sets 4096 --output logs/vsim_sets/per_env_sets.json
+```
+
+Run cells sequentially. Each cell uses a fresh process, restores and settles
+the robot before every timed trial, and synchronizes the whole CUDA device at
+trial boundaries. JSON records the source/config, native set sizes, solver
+iterations, warmup, repeated timings, and state finiteness. Component timings
+are isolated measurements and should not be summed. Add `--profile` to save a
+GPU trace, or `--no-graphs` to test graph behavior with the same physical model.
+
+The vendor's DR examples also use one environment per set: native static
+properties are shared within each set. The benchmark's grouped nominal worlds
+are a diagnostic; sharing sampled parameters during training would change the
+physical-domain sampling scheme. The corresponding licensed correctness tests
+check nominal topology equivalence, reset isolation, and per-world contact
+normalization at 100 Hz:
+
+```bash
+bash scripts/run_vsim_tests.sh -k vsim_domain_randomization_regression
+```
+
 ### Run the full domain-randomization campaign
 
 The resumable campaign compares DR off, friction only, PD gains only, link

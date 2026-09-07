@@ -34,6 +34,7 @@ from gym.envs.base.mujoco_backend_base import (
     WXYZ_TO_XYZW,
     XYZW_TO_WXYZ,
 )
+from gym.utils.torch_quat import quat_apply, quat_rotate_inverse
 
 
 class MuJocoWarpBackend(MuJocoBackendBase):
@@ -118,7 +119,8 @@ class MuJocoWarpBackend(MuJocoBackendBase):
             rs[:, :3] = self._qpos_t[:, :3]
             rs[:, 3:7] = self._qpos_t[:, 3:7][:, WXYZ_TO_XYZW]
             rs[:, 7:10] = self._qvel_t[:, :3]
-            rs[:, 10:13] = self._qvel_t[:, 3:6]
+            # Free-joint angular qvel is body-local; public velocity is world-frame.
+            rs[:, 10:13] = quat_apply(rs[:, 3:7], self._qvel_t[:, 3:6])
         rbs = self._rigid_body_states_t
         xpos = self._xpos_t.index_select(1, self._canonical_to_native_body)
         xquat = self._xquat_t.index_select(1, self._canonical_to_native_body)
@@ -333,7 +335,8 @@ class MuJocoWarpBackend(MuJocoBackendBase):
             torch.where(mask, rs[:, 7:10], self._qvel_t[:, :3], out=self._qvel_t[:, :3])
             torch.where(
                 mask,
-                rs[:, 10:13],
+                # The requested orientation may change in this same reset.
+                quat_rotate_inverse(rs[:, 3:7], rs[:, 10:13]),
                 self._qvel_t[:, 3:6],
                 out=self._qvel_t[:, 3:6],
             )
@@ -349,7 +352,7 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._qpos_t[:, :3].copy_(rs[:, :3])
         self._qpos_t[:, 3:7].copy_(rs[:, 3:7][:, XYZW_TO_WXYZ])
         self._qvel_t[:, :3].copy_(rs[:, 7:10])
-        self._qvel_t[:, 3:6].copy_(rs[:, 10:13])
+        self._qvel_t[:, 3:6].copy_(quat_rotate_inverse(rs[:, 3:7], rs[:, 10:13]))
         with self._wp_ctx:
             mjw.forward(self._m, self._d)
         self._sync_assembled_states()

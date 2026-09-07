@@ -89,7 +89,11 @@ class SimBackend(ABC):
     @property
     @abstractmethod
     def root_states(self) -> torch.Tensor:
-        """[num_envs, 13] — pos(3) quat(4) lin_vel(3) ang_vel(3)."""
+        """[num_envs, 13] — pos(3) quat(4) lin_vel(3) ang_vel(3).
+
+        Root position and both velocities are in world coordinates; orientation
+        is scalar-last [x, y, z, w]. Reset writes use these same conventions.
+        """
 
     @property
     @abstractmethod

@@ -12,14 +12,40 @@ The supported world is currently a flat ground plane. Periodic `push_robots`
 disturbances remain part of legged-task behavior. Heightfields, trimeshes, and
 projectiles are outside the current scope.
 
-Domain randomization is returning as a new backend-neutral feature. The first
-milestone—independent episode-level contact friction—is implemented for
-MuJoCo CPU, MuJoCo Warp, and VSim. `DR.md` defines the semantics, evidence, and
-remaining progression. The final speed matrix and backend-specific tests pass.
+Domain randomization implements startup contact friction and link mass/inertia,
+plus episode-level PD-gain scaling on MuJoCo CPU, MuJoCo Warp, and VSim.
+`DR.md` defines the semantics, evidence, and remaining progression. The next
+priority is correcting and verifying the angular-velocity state contract before
+collecting further DR policy evidence; historical throughput results alone do
+not establish robustness or transfer.
 A deterministic MuJoCo 3.11 crash on a valid fallen Go2 pose was isolated to
 general convex multi-contact CCD; Go2 disables that path and retains primitive
 multi-point contacts, with the captured pose covered by a subprocess
 regression. Do not reintroduce legacy engine-specific callbacks.
+
+## Revised immediate plan
+
+1. **Complete:** correct MuJoCo CPU/Warp free-root angular velocity at the
+   backend boundary:
+   publish world-frame velocity and convert world-frame reset/root-update writes
+   into native body coordinates using the requested orientation. Verify at
+   **100 Hz** with rotated poses, independent native/rotation-increment oracles,
+   selective resets, cached tensors, and real Go2Trot observations. VSim serves
+   as an unchanged contract reference.
+2. Close the separate MuJoCo CPU reset-liveness gap: native state is forwarded
+   on reset, but cached public rigid-body state is not refreshed until stepping.
+   Keep this correction separately reviewable from the angular-frame fix.
+3. Reevaluate an unchanged VSim checkpoint on corrected MuJoCo with fixed nominal
+   standing, translation, yaw, and combined commands. Report per-command survival,
+   tracking, and observation discrepancies before attributing remaining transfer
+   failure to contact physics or DR. Retrain nominal MuJoCo baselines from scratch.
+4. Freeze a fresh 100 Hz pilot with source hashes, applied parameter arrays,
+   training support, held-out domains, rollout geometry, seeds, and checkpoint
+   selection. Preserve old manifests rather than resuming them across the fix.
+5. Evaluate the paired nominal/DR checkpoints as they become available. Expand
+   only after finite training and coherent physical behavior; require three
+   complete paired seeds for promotion. Set pooling remains a separate, explicit
+   performance/DR-sampling decision, informed by the vendor benchmark.
 
 ## Architecture
 
@@ -48,6 +74,8 @@ Core invariants:
 - Root and DOF state is written first and committed atomically through one
   backend reset operation.
 - Task-facing quaternions are scalar-last `[x, y, z, w]`.
+- Root linear and angular velocities are in world coordinates on both reads
+  and writes. Tasks rotate them into body coordinates exactly once.
 - Public DOFs, bodies, torques, contacts, and state tensors use canonical
   `RobotLayout` order.
 - Contact forces are robot-body net collision forces in world coordinates and
@@ -107,6 +135,200 @@ GitHub CI runs the portable and colocated suites, Ruff, and the package build.
 Smoke training and hardware-specific groups remain explicit local gates.
 
 ## Physics and parity evidence
+
+### Angular-velocity frame correction
+
+On 2026-09-06, MuJoCo CPU and Warp were found to copy free-joint body-local
+angular `qvel[3:6]` directly into public world-frame root state and to make the
+inverse mistake on reset/root writes. The task's world-to-body rotation was
+correct for the contract, so the wrong backend output was rotated a second
+time. Both backend boundaries now convert explicitly; VSim's convention and
+the already world-frame rigid-body angular velocities are unchanged.
+
+The 100 Hz CPU probe in `logs/angular_velocity_frame_20260906/` uses 90° yaw
+and requests world-X rotation at 1 rad/s. Before the fix, native physics rotated
+about world Y and post-step public/native world angular velocity differed by
+1.00000036 rad/s. After the fix, it rotates about world X and the post-step
+error is `1.72e-8 rad/s`. This independent native check is necessary: matching
+read/write mistakes can pass a public-state round trip.
+
+Older saved trajectories independently confirm the error. In
+`logs/backend_unapplied_actions/vsim_seed37_model1000_500hz_pd_current/`,
+MuJoCo root/body world angular velocities differed by up to 0.6463 rad/s before
+termination; rotating the published root angular vector into world axes reduced
+the discrepancy below `1e-6 rad/s`. VSim's root/body angular values agreed
+directly. These are reexamined historical data, not new 500 Hz runs.
+
+The defect predates DR and affects locomotion observations, angular rewards,
+and reset/push semantics. Old MuJoCo policies are historical checkpoints with
+the old observation contract, not corrected-campaign baselines. Existing VSim
+checkpoints remain useful for reevaluation on corrected MuJoCo. In
+`logs/dr_full_new`, 1,039 of 1,260 completed evaluations involve MuJoCo training
+or evaluation and cannot establish corrected-contract robustness/transfer;
+221 VSim-to-VSim cells are unaffected by this particular defect. Preserve all
+artifacts and failures. Native parameter readbacks, policy-free probes with
+unaffected inputs, and VSim topology timings retain their documented scope.
+
+Validation: the new `test_root_velocity_frames.py` and
+`test_root_velocity_observation.py` execute 14 cases at 100 Hz: five CPU,
+five Warp, and four VSim. They cover both root-write APIs, sparse resets with
+a changed orientation, native world/body velocity, world-axis orientation
+increments, cached state liveness after stepping, and Go2Trot observation
+scaling. The CPU reset cases failed before the fix; an isolated restoration
+of the old readback also makes the observation regression fail. All 14 pass,
+as do the 11 existing 100 Hz VSim DR/set regressions, 241 portable tests,
+38 colocated tests, Ruff, and the package build. Detailed GPU/portable logs are
+retained beside the before/after probe. The older complete Warp/VSim groups were not rerun;
+the GPU gate here is the focused 100 Hz selection. No fresh training or policy
+transfer result is claimed by this correction.
+
+### VSim pre-DR speed and normalization comparison
+
+On 2026-09-06, pre-DR revision `7d82334` (parent of the first environment-set
+commit `7af97ca`) was compared with current revision `d164440` using the same
+new `vlearn 0.3.14+cu130` binary and RTX 5080. The old source ran in an isolated
+worktree; the current checkout was preserved. Both used 4,096 Go2Trot
+environments, seed 7, 100 Hz control, matched 88-input actor observations,
+disabled observation noise/normalizers, 65,536 rollout samples (16 steps per
+environment), 32,768 optimizer minibatches, and 32 gradient steps. Each fresh
+training ran 60 iterations; steady-state medians exclude the first 10.
+
+| Physics frequency | Pre-DR, one set | Current, one set | Current, 4,096 nominal sets |
+|---|---:|---:|---:|
+| 500 Hz | 146,556 samples/s | 149,465 samples/s | 132,086 samples/s |
+| 100 Hz | 314,747 samples/s | 327,763 samples/s | 303,941 samples/s |
+
+These are synchronized PPO collection-plus-optimization rates. The many-set
+case enabled friction DR with its value fixed at nominal, isolating topology
+from physical variation. Relative to current one-set code, many sets reduced
+PPO throughput by 11.6% at 500 Hz and 7.3% at 100 Hz. Backend-step throughput
+(including eager state refresh) fell 16.6% and 14.4%, respectively; setup
+increased from about 1.8 to 4.4 s.
+Enabling all DR axes at fixed nominal values gave similar speed at 500 Hz.
+Current one-set backend throughput remained within 1.2% of pre-DR. A separate
+100 Hz empty-reset microbenchmark was 11.6% slower than pre-DR because current
+code still commits/refreshes empty selections; timeout-reset throughput and
+short PPO throughput improved in the same comparison.
+
+Current one-set and nominal many-set probes had bitwise-identical sampled
+state, contact, observation, and diagnostic policy-output arrays at both
+frequencies. Old/current initial observations and policy outputs agreed within
+`1.7e-7` and `1.3e-6`, respectively; later old/current contact trajectories were
+not identical. RunningMeanStd source is unchanged and disabled in this config.
+Contact-strength scaling did change independently of set count: current code
+uses native imported mass (about 16.3063 kg), versus the old configured
+16.087 kg. VSim's converted asset supplies 0.21928 kg across eight calf
+collision links without explicit URDF inertials. This increases the weight
+denominator 1.36%; the source revisions share the same conversion pipeline.
+
+All seven short trainings retained finite metrics and checkpoint tensors.
+Licensed test gates passed: 24 tests on pre-DR and 29 on current source.
+Evidence supports targeting set-layout and empty-reset costs for optimization.
+These timings do not establish converged training quality or campaign transfer,
+and both revisions used the new binary, so they do not isolate a VSim version
+effect. Reset RNG consumption differs across revisions. Protocol, raw timing
+and state arrays, source hashes, workers, mass audit, and the concise report
+are retained under `logs/vsim_pre_dr_comparison_20260906/`.
+
+### VSim environment-set profiling at 100 Hz
+
+The vendor SDK/examples supplied on 2026-09-06 use the same topology as Q2:
+`train/envs/ant_environment_domain_randomization.py:183–184` creates
+`[1] * num_envs`. The vendor getting-started guide documents that static
+properties are shared within a set; independent physical DR uses one set per
+environment. Its DR PPO config also uses 4,096 environments. Vendor Ant has
+fewer links/DOFs/sensors than Q2 Go2 and uses different solver settings, so
+its absolute speed is not a matched performance reference. Q2 applies physical
+DR at startup; repeated property writes are not the source of its ongoing
+set-layout cost. The supplied release includes Python/bindings and native
+binaries, without the native solver implementation.
+
+New profiling uses only **100 Hz physics/control**, current Q2, VSim
+`0.3.14+cu130`, RTX 5080, 4,096 Go2 environments, seed 7, eight native solver
+iterations, and fixed nominal parameters. This measures a zero-torque robot
+that has fallen into ground contact. A diagnostic proxy changes set
+count with all physical DR paths disabled. Each trial restores the initial
+pose, settles for 200 steps, warms the measured operation for 25 calls, then
+times 100 calls with device-wide synchronization; medians use three repeats.
+
+| Set count | Native step | Full backend step | State refresh |
+|---|---:|---:|---:|
+| 1 | 3.923 ms | 4.116 ms | 0.221 ms |
+| 64 | 3.862 ms | 4.053 ms | 0.225 ms |
+| 4,096 | 4.495 ms | 4.729 ms | 0.298 ms |
+
+These isolated component timings are not additive. Most added time is inside
+native simulation; standalone canonical tensor assembly was about 82–83 us
+at all three counts. Disabling CUDA graphs retained the native-step gap
+(4.013 ms versus 4.604 ms). GPU traces of ten full backend steps had identical
+kernel-name/call counts (3,070 launches, 128 unique names), with increased
+execution time in several native articulation kernels. In particular,
+`artiStage_11` had median durations of 28.3 versus 50.2 us across the same
+80 calls (means 28.5/59.5 us, with outliers in the many-set trace). More
+separate static-property data and reduced data sharing are a plausible cause;
+the exact cache/memory mechanism is not established by these timings.
+
+The 64-set result motivates a future controlled comparison of shared sampled
+physical configurations. Such pooling changes the DR sampling scheme and must
+preserve explicit environment-to-set mapping. No production DR semantics or
+backend physics were changed in this investigation. Empty-reset refresh cost
+remains a separate optimization target.
+
+The reusable `scripts/benchmark_vsim_environment_sets.py` retains the 100 Hz
+protocol without hardware-dependent pass/fail speed thresholds. Licensed
+regressions in `test_vsim_domain_randomization_regression.py` cover native set
+selection, nominal trajectories/scaled observations, reset isolation, and
+contact-strength normalization using each environment's applied mass.
+Profiling artifacts and native kernel comparisons are under
+`logs/vsim_set_investigation_20260906/`.
+
+Validation: all 11 new licensed cases passed at 100 Hz; the portable suite
+passed 236 tests and the colocated suites passed 38. Ruff and touched-file
+format checks passed. The finished benchmark CLI completed all eight profiles
+with eight environments in two sets. Initial reset tests used one tolerance
+for pose and velocity; diagnostics found exact unselected DOF state immediately
+after reset and about `1e-4 rad/s` velocity differences after the next contact
+solve. The final test preserves tight immediate-reset/pose checks and uses a
+separate `2e-4` velocity tolerance for that next step. Initial failure logs and
+per-field deltas remain in the artifact directory. Ruff now excludes all of
+`thirdparty/`, including the newly supplied vendor backup.
+
+### Vendor Ant environment-set cross-check
+
+On 2026-09-06, the vendor's `AntEnvironmentGpu` was benchmarked directly,
+without importing Q2 environment/backend code. Both layouts used the same
+vendor class, nominal Ant asset/parameters, 4,096 environments, 100 Hz,
+eight solver iterations, seed 7, zero actions/reset noise, and identical
+flattened 64-by-64 world placement. A scoped setup wrapper changed only the
+partition from one set of 4,096 environments to 4,096 singleton sets; vendor
+stepping, observation, reward, and reset methods were unchanged. Comparing
+the regular and DR classes directly would also change solver/material settings
+and reset bookkeeping, so this comparison holds the implementation constant.
+
+Two fresh processes per layout ran in one/many/many/one order. Each profile
+used five timed batches of 500 steps per process with warmup and device-wide
+CUDA synchronization. Across ten batches per layout, native stepping increased
+from 1.188 to 1.302 ms (8.8% less throughput); the full vendor environment loop
+increased from 1.311 to 1.430 ms (8.3% less throughput). Native timing used a
+zero-torque settled-contact workload; full-environment timing included its
+ordinary termination/reset cycle. Sampled state/observation arrays were finite
+and bitwise identical across all four processes. The partition therefore has
+a measurable speed cost in the vendor integration too. These are environment
+throughput measurements, without PPO optimization. Raw results, source hashes,
+the exact worker, and a report are in `logs/vendor_ant_sets_20260906/`.
+
+A vendor-facing reproducer now lives at
+`thirdparty/vlearn/train/benchmark_ant_sets.py`, with instructions beside it.
+It uses the original non-DR Ant class for both layouts and preserves its
+stepping/reset methods. The default protocol sets the episode timeout to
+100 steps, ensuring resets within each timed 500-step batch at 100 Hz;
+this differs from the earlier probe's default 1,000-step timeout. With the
+same hardware, VSim version, and 4,096 environments, ten batches per layout
+measured 1.236 ms for one shared set and 1.339 ms for singleton sets,
+or 7.6% lower throughput. All four processes exercised resets, and world
+placement, sampled preflight states, and corresponding timed trial final
+states matched bitwise. Raw results are in the vendor checkout's
+`benchmarks/ant_sets/`; the script requires only the normal vendor setup.
 
 ### Pendulum
 
