@@ -1,0 +1,45 @@
+from go2_deploy.utility.thread import RecurrentThread
+
+
+class KeyboardHandler:
+    def __init__(self, controller):
+        self.controller = controller
+        self.keyboard_thread = RecurrentThread(
+            interval=0.01, target=self._process_input
+        )
+        self.keyboard_thread.Start()
+
+    def _process_input(self):
+        key = input()
+        if key == "":
+            self.controller.request_emergency_stop()
+        # elif key == "r":
+        #     self.controller.request_recovery()
+        elif key == "q":
+            self.controller.request_intermediate()
+        elif key == "c":
+            self.controller.request_custom_ctrl()
+        elif key == "i":
+            self.controller.kp_mult += 0.1
+            print(
+                f"kp increased to {self.controller.kp_mult * self.controller.cfg.kp:.4}"
+            )
+        elif key == "k":
+            if self.controller.kp_mult >= 0.1:
+                self.controller.kp_mult -= 0.1
+            print(
+                f"kp decreased to {self.controller.kp_mult * self.controller.cfg.kp:.4}"
+            )
+        elif key == "l":
+            self.controller.kd_mult += 0.1
+            print(
+                f"kd increased to {self.controller.kd_mult * self.controller.cfg.kd:.4}"
+            )
+        elif key == "j":
+            if self.controller.kd_mult >= 0.1:
+                self.controller.kd_mult -= 0.1
+            print(
+                f"kd decreased to {self.controller.kd_mult * self.controller.cfg.kd:.4}"
+            )
+        else:
+            print("Invalid keyboard input!")

@@ -119,6 +119,7 @@ class LeggedRobotCfg(BaseConfig):
         fix_base_link = False
         rotor_inertia = 0.0
         joint_damping = 0.0
+        collapse_fixed_joints = False
 
     class reward_settings:
         # * tracking reward = exp(-error^2/sigma)
@@ -149,6 +150,9 @@ class LeggedRobotCfg(BaseConfig):
         # gym/utils/interfaces/teleop_bindings.py).  Off by default;
         # scripts/play.py --viewer_ui turns them back on.
         show_ui = False
+
+    class mjmodel_settings:
+        njmax = 90
 
 
 class LeggedRobotRunnerCfg(BaseConfig):
@@ -228,6 +232,7 @@ class LeggedRobotRunnerCfg(BaseConfig):
         clip_param = 0.2
         learning_rate = 1.0e-3
         max_grad_norm = 1.0
+        rollout_size = 2**16
         # Critic
         use_clipped_value_loss = True
         # Actor
