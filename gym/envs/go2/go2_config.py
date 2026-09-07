@@ -5,6 +5,28 @@ from gym.envs.base.legged_robot_config import (
 
 BASE_HEIGHT_REF = 0.4
 
+GO2_DOF_NAMES = [
+    "FL_hip_joint",
+    "FL_thigh_joint",
+    "FL_calf_joint",
+    "FR_hip_joint",
+    "FR_thigh_joint",
+    "FR_calf_joint",
+    "RL_hip_joint",
+    "RL_thigh_joint",
+    "RL_calf_joint",
+    "RR_hip_joint",
+    "RR_thigh_joint",
+    "RR_calf_joint",
+]
+
+GO2_FOOT_NAMES = [
+    "FL_foot",
+    "FR_foot",
+    "RL_foot",
+    "RR_foot",
+]
+
 
 class Go2Cfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
@@ -18,8 +40,8 @@ class Go2Cfg(LeggedRobotCfg):
     class init_state(LeggedRobotCfg.init_state):
         default_joint_angles = {
             "hip": 0.0,
-            "thigh": -0.785398,
-            "calf": 1.596976,
+            "thigh": 0.66,
+            "calf": -1.36,
         }
 
         # * reset setup chooses how the initial conditions are chosen.
@@ -36,8 +58,8 @@ class Go2Cfg(LeggedRobotCfg):
         # * initialization for random range setup
         dof_pos_range = {
             "hip": [-0.01, 0.01],
-            "thigh": [-0.785398, -0.785398],
-            "calf": [1.596976, 1.596976],
+            "thigh": [0.65, 0.67],
+            "calf": [-1.37, -1.35],
         }
         dof_vel_range = {"hip": [0.0, 0.0], "thigh": [0.0, 0.0], "calf": [0.0, 0.0]}
         root_pos_range = [
@@ -86,18 +108,22 @@ class Go2Cfg(LeggedRobotCfg):
         added_mass_range = [-1.0, 1.0]
 
     class asset(LeggedRobotCfg.asset):
-        file = "{LEGGED_GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
+        file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
         foot_name = "foot"
         penalize_contacts_on = ["calf"]
         terminate_after_contacts_on = ["base"]
         end_effector_names = ["foot"]
-        collapse_fixed_joints = False
-        self_collisions = 1
-        flip_visual_attachments = False
+        fix_base_link = False
         disable_gravity = False
         disable_motors = False
         joint_damping = 0.01
         rotor_inertia = [0.002268, 0.002268, 0.005484] * 4
+
+        class robot_layout:
+            version = "go2_v1"
+            dof_names = GO2_DOF_NAMES
+            actuated_dof_names = GO2_DOF_NAMES
+            body_groups = {"feet": GO2_FOOT_NAMES}
 
     class reward_settings(LeggedRobotCfg.reward_settings):
         soft_dof_pos_limit = 0.9
@@ -118,8 +144,11 @@ class Go2Cfg(LeggedRobotCfg):
         tau_ff = 4 * [18, 18, 28]
         commands = [3, 1, 3]
 
-    class mjmodel_settings:
+    class mjspec_attributes:
         njmax = 130
+
+    class mjspec_option_attributes:
+        ccd_iterations = 50
 
 
 class Go2RunnerCfg(LeggedRobotRunnerCfg):
@@ -140,7 +169,7 @@ class Go2RunnerCfg(LeggedRobotRunnerCfg):
         ]
         normalize_obs = False
         actions = ["dof_pos_target"]
-        add_noise = True
+        add_noise = False
         disable_actions = False
 
         class noise:
@@ -189,7 +218,9 @@ class Go2RunnerCfg(LeggedRobotRunnerCfg):
                 termination = 0.01
 
     class algorithm(LeggedRobotRunnerCfg.algorithm):
-        pass
+        # Preserve the old runner's collection geometry: it collected one
+        # optimizer batch per rollout before these sizes became independent.
+        rollout_size = 2**15
 
     class runner(LeggedRobotRunnerCfg.runner):
         run_name = ""

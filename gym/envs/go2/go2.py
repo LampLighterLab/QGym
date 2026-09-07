@@ -1,13 +1,14 @@
 import torch
 
 from gym.envs.base.legged_robot import LeggedRobot
+# from learning.utils.logger.SaveStates import (
+#     init_env_log_buffers,
+# )
 
 
 class Go2(LeggedRobot):
-    def __init__(self, gym, sim, cfg, sim_params, sim_device, headless, backend=None):
-        super().__init__(
-            gym, sim, cfg, sim_params, sim_device, headless, backend=backend
-        )
+    def __init__(self, cfg, device, headless, backend):
+        super().__init__(cfg, device, headless, backend)
 
     def _reward_lin_vel_z(self):
         """Penalize z axis base linear velocity with squared exp"""
