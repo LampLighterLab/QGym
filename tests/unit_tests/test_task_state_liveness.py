@@ -113,19 +113,15 @@ def _build_env_reset_to_basic(device: str, base_z: float):
 
 
 def _assert_base_spawns_at_configured_height(device: str):
-    # Regression for the warp floating-base reset mis-placement (2026-07-27):
-    # reset_dof_state's sync rebuilt root_states from the not-yet-committed
-    # qpos, clobbering the task's pending root_states write, so reset_root_state
-    # committed the STALE height (base spawned near the ground instead of the
-    # configured pos).  The task writes root_states then commits via
-    # reset_root_state; the committed base z must equal the configured height.
+    # The task writes DOF and root views before one atomic reset commit. This
+    # guards against rebuilding root_states from native qpos before the task's
+    # pending root write has been committed.
     base_z = 0.42
     env = _build_env_reset_to_basic(device, base_z)
     z = env.root_states[:, 2]
     assert torch.allclose(z, torch.full_like(z, base_z), atol=2e-2), (
         f"floating base spawned at z={z.tolist()} on {device}, expected "
-        f"~{base_z} — reset_dof_state's sync is clobbering the pending "
-        "root_states write before reset_root_state commits it"
+        f"~{base_z} — the atomic reset did not preserve the pending root state"
     )
 
 

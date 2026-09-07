@@ -1,7 +1,11 @@
 from .base_config import BaseConfig
+from .domain_randomization import DomainRandomizationCfg
 
 
 class FixedRobotCfg(BaseConfig):
+    class domain_randomization(DomainRandomizationCfg):
+        pass
+
     class env:
         num_envs = 4096
         num_actuators = 1

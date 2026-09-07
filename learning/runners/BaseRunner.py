@@ -85,6 +85,14 @@ class BaseRunner:
             return
         self.env.set_states(actions_list, actions)
 
+    def reset_envs(self):
+        torch.logical_or(
+            self.env.timed_out,
+            self.env.terminated,
+            out=self.env.to_be_reset,
+        )
+        self.env._reset_idx(self.env.to_be_reset)
+
     def get_timed_out(self):
         return self.env.get_states(["timed_out"]).to(self.device)
 

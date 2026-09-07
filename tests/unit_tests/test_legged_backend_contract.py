@@ -9,6 +9,81 @@ import pytest
 import torch
 
 
+def _reset_mask(backend, selected=None):
+    mask = torch.zeros(
+        backend.root_states.shape[0],
+        dtype=torch.bool,
+        device=backend.device,
+    )
+    if selected is None:
+        mask.fill_(True)
+    else:
+        mask[selected] = True
+    return mask
+
+
+def _assert_limited_dof_reset_clamps(backend):
+    props = backend._make_dof_props(backend._mjm)
+    lower = torch.tensor(props["lower"], dtype=torch.float, device=backend.device)
+    upper = torch.tensor(props["upper"], dtype=torch.float, device=backend.device)
+    requested = torch.where(
+        torch.arange(backend.num_dof, device=backend.device) % 2 == 0,
+        lower - 1.0,
+        upper + 1.0,
+    )
+    untouched = backend.dof_pos[1:].clone()
+
+    backend.dof_pos[0] = requested
+    backend.reset_state(_reset_mask(backend, [0]))
+
+    expected = torch.where(
+        torch.arange(backend.num_dof, device=backend.device) % 2 == 0,
+        lower,
+        upper,
+    )
+    torch.testing.assert_close(backend.dof_pos[0], expected)
+    torch.testing.assert_close(backend.dof_pos[1:], untouched)
+
+
+def _assert_rigid_body_state_is_current_after_step(backend):
+    device = backend.device
+    num_envs = backend.root_states.shape[0]
+    reset_mask = _reset_mask(backend)
+    torques = torch.zeros(num_envs, backend.num_dof, device=device)
+
+    backend.root_states[:, :3] = torch.tensor([0.0, 0.0, 5.0], device=device)
+    backend.root_states[:, 3:7] = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device)
+    backend.root_states[:, 7:13] = 0.0
+    backend.dof_vel.zero_()
+    backend.reset_state(reset_mask)
+
+    # The first step puts the assembled public body state on a known native
+    # state. The second step must expose that step's result, not the first
+    # step's pre-integration kinematics.
+    backend.step(torques)
+    root_position = backend.root_states[:, :3].clone()
+    body_state = backend.rigid_body_states.view(num_envs, backend.num_bodies, 13)
+    body_position = body_state[:, :, :3].clone()
+
+    backend.step(torques)
+    root_translation = backend.root_states[:, :3] - root_position
+    body_state = backend.rigid_body_states.view(num_envs, backend.num_bodies, 13)
+    body_translation = body_state[:, :, :3] - body_position
+
+    torch.testing.assert_close(
+        body_translation,
+        root_translation[:, None, :].expand_as(body_translation),
+        atol=2e-6,
+        rtol=1e-4,
+    )
+    torch.testing.assert_close(
+        body_state[:, :, 7:10],
+        backend.root_states[:, None, 7:10].expand_as(body_state[:, :, 7:10]),
+        atol=2e-6,
+        rtol=1e-4,
+    )
+
+
 # ── Shapes and metadata ────────────────────────────────────────────────────────
 
 
@@ -105,12 +180,32 @@ class TestLeggedPhysics:
         finally:
             backend.close()
 
+    def test_configured_geom_attributes_are_applied(self):
+        """Compiled MuJoCo geoms receive the config's solver parameters."""
+        import types
+
+        pytest.importorskip("mujoco")
+        from gym.envs.base.mujoco_cpu_backend import MuJocoCPUBackend
+        from tests.unit_tests.conftest import _make_mini_cheetah_cfg
+
+        cfg = _make_mini_cheetah_cfg()
+        cfg.mjspec_geom_attributes = types.SimpleNamespace(solref=[0.005, 1.0])
+        backend = MuJocoCPUBackend()
+        backend.setup(cfg, num_envs=1, device="cpu", task=None)
+        try:
+            np.testing.assert_allclose(
+                backend._mjm.geom_solref,
+                np.broadcast_to([0.005, 1.0], backend._mjm.geom_solref.shape),
+            )
+        finally:
+            backend.close()
+
     def test_robot_above_ground(self, legged_cpu_backend):
         """Robot shouldn't fall through the ground plane."""
         b = legged_cpu_backend
         # Set initial height
         b.root_states[:, 2] = 0.35
-        b.reset_root_state(torch.arange(4))
+        b.reset_state(_reset_mask(b))
         torques = torch.zeros(4, b.num_dof)
         for _ in range(500):
             b.step(torques)
@@ -130,25 +225,66 @@ class TestLeggedPhysics:
         z_after = b.root_states[0, 2].item()
         assert z_after < z_init, "Gravity should pull robot down"
 
+    def test_rigid_body_state_is_current_after_step(self, legged_cpu_backend):
+        _assert_rigid_body_state_is_current_after_step(legged_cpu_backend)
+
+    def test_rigid_body_velocity_is_at_published_body_origin(self, legged_cpu_backend):
+        import mujoco
+
+        backend = legged_cpu_backend
+        backend.root_states[:, 2] = 2.0
+        backend.root_states[:, 7:10] = torch.tensor([0.2, -0.1, 0.3])
+        backend.root_states[:, 10:13] = torch.tensor([0.4, -0.2, 0.1])
+        backend.dof_vel[:] = torch.linspace(-0.5, 0.5, backend.num_dof)
+        reset_mask = _reset_mask(backend)
+        backend.reset_state(reset_mask)
+        backend.step(torch.zeros(4, backend.num_dof))
+
+        public_state = backend.rigid_body_states.view(4, backend.num_bodies, 13)[0]
+        data = backend._datas[0]
+        model = backend._model_for_env(0)
+        for canonical_id, native_id in enumerate(backend._canonical_to_native_body_np):
+            linear_jacobian = np.empty((3, model.nv))
+            angular_jacobian = np.empty((3, model.nv))
+            mujoco.mj_jac(
+                model,
+                data,
+                linear_jacobian,
+                angular_jacobian,
+                data.xpos[native_id],
+                int(native_id),
+            )
+            linear_velocity = linear_jacobian @ data.qvel
+            angular_velocity = angular_jacobian @ data.qvel
+            np.testing.assert_allclose(
+                public_state[canonical_id, 7:13].numpy(),
+                np.concatenate((linear_velocity, angular_velocity)),
+                atol=2e-6,
+                rtol=1e-5,
+            )
+
 
 # ── Reset ──────────────────────────────────────────────────────────────────────
 
 
 class TestLeggedReset:
-    def test_reset_root_state_persists(self, legged_cpu_backend):
+    def test_limited_dof_reset_clamps_to_asset_range(self, legged_cpu_backend):
+        _assert_limited_dof_reset_clamps(legged_cpu_backend)
+
+    def test_root_state_persists_after_reset(self, legged_cpu_backend):
         b = legged_cpu_backend
         b.root_states[0, 2] = 1.0  # set z=1
         b.root_states[0, 3:7] = torch.tensor([0.0, 0.0, 0.0, 1.0])
-        b.reset_root_state(torch.tensor([0]))
+        b.reset_state(_reset_mask(b, [0]))
         # One step should keep it roughly near z=1
         b.step(torch.zeros(4, b.num_dof))
         assert b.root_states[0, 2].item() > 0.9
 
-    def test_reset_dof_state_persists(self, legged_cpu_backend):
+    def test_dof_state_persists_after_reset(self, legged_cpu_backend):
         b = legged_cpu_backend
         b.dof_pos[0, 0] = 0.5
         b.dof_vel[0, :] = 0.0
-        b.reset_dof_state(torch.tensor([0]))
+        b.reset_state(_reset_mask(b, [0]))
         b.step(torch.zeros(4, b.num_dof))
         # Should be close to 0.5 after one step
         assert abs(b.dof_pos[0, 0].item() - 0.5) < 0.1
@@ -176,6 +312,12 @@ class TestLeggedWarpShapes:
     def test_rigid_body_states_shape(self, legged_warp_backend):
         b = legged_warp_backend
         assert b.rigid_body_states.shape == (4 * b.num_bodies, 13)
+
+    def test_limited_dof_reset_clamps_to_asset_range(self, legged_warp_backend):
+        _assert_limited_dof_reset_clamps(legged_warp_backend)
+
+    def test_rigid_body_state_is_current_after_step(self, legged_warp_backend):
+        _assert_rigid_body_state_is_current_after_step(legged_warp_backend)
 
 
 # ── Cross-backend comparison ──────────────────────────────────────────────────
@@ -222,9 +364,9 @@ class TestLeggedCrossBackend:
 
         # Set identical initial height
         cpu.root_states[:, 2] = 0.35
-        cpu.reset_root_state(torch.arange(N))
+        cpu.reset_state(_reset_mask(cpu))
         warp.root_states[:, 2] = 0.35
-        warp.reset_root_state(torch.arange(N, device="cuda:0"))
+        warp.reset_state(_reset_mask(warp))
 
         cpu_torques = torch.zeros(N, 12)
         warp_torques = torch.zeros(N, 12, device="cuda:0")
@@ -235,9 +377,19 @@ class TestLeggedCrossBackend:
 
             pos_err = (cpu.dof_pos - warp.dof_pos.cpu()).abs().max().item()
             root_err = (cpu.root_states - warp.root_states.cpu()).abs().max().item()
+            body_err = (
+                (cpu.rigid_body_states - warp.rigid_body_states.cpu())
+                .abs()
+                .max()
+                .item()
+            )
 
             tol = 1e-4 if step < 100 else 0.2
             assert pos_err < tol, f"DOF pos diverged at step {step}: {pos_err:.2e}"
             assert root_err < tol, (
                 f"Root states diverged at step {step}: {root_err:.2e}"
             )
+            if step < 100:
+                assert body_err < 2e-3, (
+                    f"Rigid-body states diverged at step {step}: {body_err:.2e}"
+                )

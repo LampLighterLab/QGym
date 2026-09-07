@@ -86,16 +86,20 @@ uv run --frozen scripts/train.py --task mini_cheetah --device cuda:0 \
 
 ### Optional vsim setup
 
-vsim is a closed-source, node-locked backend. It additionally requires Linux,
-an NVIDIA GPU, the system `libczmq4` package, and vendor files that cannot be
-committed to this repository.
+vsim is a closed-source, node-locked backend. Its wheel requires Linux x86_64
+and Python 3.11, plus an NVIDIA GPU, the system `libczmq4` package, and vendor
+files that cannot be committed to this repository.
 
 Place these files under `thirdparty/vlearn/` as described in
-[`thirdparty/vlearn/README.md`](thirdparty/vlearn/README.md):
+[`thirdparty/README.md`](thirdparty/README.md):
 
-- `vlearn-0.3.12-cp311-cp311-linux_x86_64.whl`
+- `vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl`
 - `License.key`
 - `TurboActivate.dat`
+
+The selected wheel targets CUDA 13.0, matching the locked Linux PyTorch build.
+Keep the vendor wheel local; its path and hash are recorded in `pyproject.toml`
+and `uv.lock`.
 
 Install the VSim extra from the repository root:
 
@@ -151,6 +155,38 @@ uv run --frozen scripts/train.py --task pendulum --device cpu --num_envs 256 --h
 # GPU training (Linux only, requires mujoco-warp)
 uv run --frozen scripts/train.py --task mini_cheetah --device cuda:0 --num_envs 4096 --headless
 ```
+
+Training follows the task's domain-randomization config exactly. There is no
+training CLI override: physical DR changes native backend topology and should
+be an explicit, reviewable part of the environment definition. Campaign and
+evaluation tools make private config copies when they need controlled
+ablations.
+
+The config makes each axis's sampling cadence explicit:
+
+```python
+class domain_randomization:
+    class startup:
+        # One fixed physical identity per parallel environment.
+        contact_friction_range = [0.5, 1.0]
+        link_mass_scale_range = [0.9, 1.1]
+
+    class episode:
+        # Bound task tensors, resampled whenever an environment resets.
+        scale_ranges = {
+            "p_gains": [0.9, 1.1],
+            "d_gains": [0.9, 1.1],
+        }
+```
+
+Startup axes still span the configured distribution across all parallel
+environments; they simply stay fixed for the lifetime of the task. This avoids
+reapplying physical model properties during the frequent asynchronous resets.
+Set a startup range to `None`, or omit an episodic target from `scale_ranges`,
+to disable it. The task explicitly binds the allowed episodic tensors; the DR
+object then owns their nominal copies and current scales. This keeps nominal
+DR state out of the environment and prevents config strings from reaching
+arbitrary task attributes.
 
 ### Resume or play with the saved configuration
 
@@ -212,6 +248,13 @@ Google DeepMind MJX package). Use `--backend mujoco` for MuJoCo CPU, or launch
 with `uv run --env-file .env.vsim ... --backend vsim` for VSim on `cuda:0`.
 The GPU default requires the `gpu` extra described above.
 
+Go2Trot bounds each full desired joint position (default offset, gait reference,
+and policy residual) to the robot's joint limits before PD control. Observations
+and action-history rewards use the applied residual; PPO keeps the separate raw
+policy sample. Evaluation artifacts record raw outputs before the step and
+applied commands after this projection. Policies trained before this boundary
+was introduced need reevaluation or retraining under the current control path.
+
 The default protocol evaluates 200 randomized initial states, balanced across
 ten fixed stand, walk, strafe, turn, and combined-command cases. It records
 command tracking, survival, base stability, gait timing, phase-binned foot
@@ -240,6 +283,95 @@ reset_to_basic` for an identical-state diagnostic, or repeat `--reset_mode` to
 produce both basic and randomized evaluations. Checkpoints must match the
 current task's observation and network schema; an old incompatible checkpoint
 is rejected during loading instead of being partially evaluated.
+
+### Measure VSim environment-set overhead
+
+Use the nominal Go2Trot topology benchmark to separate native simulation,
+state refresh, tensor assembly, and empty-reset costs. It fixes both control
+and physics to **100 Hz** and varies set sharing while keeping physical DR
+disabled and all physical parameters nominal:
+
+```bash
+uv run --frozen --env-file .env.vsim -m scripts.benchmark_vsim_environment_sets \
+    --num-envs 4096 --sets 1 --output logs/vsim_sets/one_set.json
+uv run --frozen --env-file .env.vsim -m scripts.benchmark_vsim_environment_sets \
+    --num-envs 4096 --sets 64 --output logs/vsim_sets/64_sets.json
+uv run --frozen --env-file .env.vsim -m scripts.benchmark_vsim_environment_sets \
+    --num-envs 4096 --sets 4096 --output logs/vsim_sets/per_env_sets.json
+```
+
+Run cells sequentially. Each cell uses a fresh process, restores and settles
+the robot before every timed trial, and synchronizes the whole CUDA device at
+trial boundaries. JSON records the source/config, native set sizes, solver
+iterations, warmup, repeated timings, and state finiteness. Component timings
+are isolated measurements and should not be summed. Add `--profile` to save a
+GPU trace, or `--no-graphs` to test graph behavior with the same physical model.
+
+The vendor's DR examples also use one environment per set: native static
+properties are shared within each set. The benchmark's grouped nominal worlds
+are a diagnostic; sharing sampled parameters during training would change the
+physical-domain sampling scheme. The corresponding licensed correctness tests
+check nominal topology equivalence, reset isolation, and per-world contact
+normalization at 100 Hz:
+
+```bash
+bash scripts/run_vsim_tests.sh -k vsim_domain_randomization_regression
+```
+
+### Run a domain-randomization campaign
+
+For a reduced 100 Hz restart after the backend frame/reset corrections:
+
+```bash
+uv run --frozen --env-file .env.vsim \
+    scripts/run_full_domain_randomization_campaign.py \
+    --output logs/baselines_100hz_20260906 \
+    --backends cpu warp vsim --bundles off all --exclude-training cpu:all \
+    --skip-speed --seeds 7 --train-iterations 500 --checkpoints 100 250 500 \
+    --eval-domains nominal combined_in --cpu-workers 2 \
+    --stages train eval summarize --evaluate-after-training
+```
+
+This trains five cells: nominal CPU/Warp/VSim and full DR on Warp/VSim, with
+50 evaluations. Each completed training cell releases its evaluations without
+waiting for all training to finish. In-range evaluation follows the saved
+training parameter ranges. This single-seed screen is preliminary; see
+`MIGRATION_PLAN.md` for the protocol and promotion gates.
+
+The default full campaign compares DR off, friction only, PD gains only, link
+mass only, and all axes across MuJoCo CPU, MuJoCo Warp, and VSim. It trains
+three seeds through iteration 1000, preserves checkpoints at 100, 250, 500,
+750, and 1000, and evaluates intermediate and final policies in controlled
+nominal, in-range, and stress domains. This is a multi-day run on the current
+workstation.
+
+```bash
+uv run --env-file .env.vsim \
+    scripts/run_full_domain_randomization_campaign.py \
+    --output logs/dr_full_fresh
+```
+
+Resume a campaign after interruption with `--resume` only while its execution
+sources and protocol are unchanged. The runner rejects source or protocol drift
+rather than mixing incompatible evidence. Follow progress and view completed
+results while it runs with:
+
+```bash
+Q2_DR_CAMPAIGN_DIR=logs/baselines_100hz_20260906 \
+    uv run --frozen marimo edit notebooks/go2_domain_randomization_campaign.py
+```
+
+The report labels reward as a training diagnostic. Policy decisions use
+physical evaluation metrics, paired seeds, nominal-regression checks, and
+worst-decile behavior.
+
+`logs/dr_full_20260813_nj256` is a deliberately closed partial campaign: all 25
+runtime cells and 23 valid training cells completed, but held-out evaluations
+were not run. Its report is useful for backend cost and trainability; it does
+not select a DR bundle or claim robustness. Warp off/seed 27 is excluded because
+its final training diagnostics became non-finite. Wrap-up changes after the
+collection invalidate that directory's execution-source hash, so start a new
+output directory instead of resuming it.
 
 ## Notes
 

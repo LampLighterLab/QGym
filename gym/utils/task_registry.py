@@ -147,7 +147,9 @@ class TaskRegistry:
             task_class = self.get_task_class(name)
         else:
             raise ValueError(f"Task with name: {name} was not registered")
-        set_seed(env_cfg.seed)
+        # Persist a randomly resolved ``-1`` seed so backend-neutral DR can
+        # use a dedicated reproducible generator without consuming task RNG.
+        env_cfg.seed = set_seed(env_cfg.seed)
         backend = select_backend(env_cfg, device, backend)
         env = task_class(
             cfg=env_cfg,

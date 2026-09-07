@@ -33,6 +33,7 @@ import pytest
 import torch
 
 from gym import GYM_ROOT_DIR
+from gym.envs.base.domain_randomization import DomainRandomizationCfg
 import os
 
 PENDULUM_URDF = os.path.join(
@@ -63,7 +64,12 @@ def _make_cfg(
         terminate_after_contacts_on=[],
     )
     sim = types.SimpleNamespace(gravity=[0.0, 0.0, -GRAVITY])
-    return types.SimpleNamespace(asset=asset, sim=sim, sim_dt=sim_dt)
+    return types.SimpleNamespace(
+        asset=asset,
+        domain_randomization=DomainRandomizationCfg(),
+        sim=sim,
+        sim_dt=sim_dt,
+    )
 
 
 def _stable_energy(dof_pos: torch.Tensor, dof_vel: torch.Tensor) -> torch.Tensor:
@@ -103,7 +109,7 @@ def _set_lower_half_ics(b, seed: int = 42):
     offsets = (torch.rand(N_ENVS, 1) - 0.5) * math.pi
     b.dof_pos[:] = math.pi + offsets
     b.dof_vel[:] = (torch.rand(N_ENVS, 1) - 0.5) * 4.0  # qdot ∈ [-2, 2]
-    b.reset_dof_state(torch.arange(N_ENVS))
+    b.reset_state(torch.ones(N_ENVS, dtype=torch.bool))
 
 
 def test_damped_motion_dissipates_energy_and_converges(damped_backend):

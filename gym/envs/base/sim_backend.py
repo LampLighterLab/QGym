@@ -18,7 +18,7 @@ class SimBackend(ABC):
     # state tensors are live after this point
     for _ in training_loop:
         backend.step(torques)           # advance physics
-        backend.reset_dof_state(ids)    # commit reset state for specific envs
+        backend.reset_state(mask)       # commit selected environment state
     backend.close()
     """
 
@@ -89,7 +89,11 @@ class SimBackend(ABC):
     @property
     @abstractmethod
     def root_states(self) -> torch.Tensor:
-        """[num_envs, 13] — pos(3) quat(4) lin_vel(3) ang_vel(3)."""
+        """[num_envs, 13] — pos(3) quat(4) lin_vel(3) ang_vel(3).
+
+        Root position and both velocities are in world coordinates; orientation
+        is scalar-last [x, y, z, w]. Reset writes use these same conventions.
+        """
 
     @property
     @abstractmethod
@@ -98,7 +102,10 @@ class SimBackend(ABC):
 
     @property
     def rigid_body_states(self) -> torch.Tensor:
-        """[num_envs * num_bodies, 13].  Legged robots only.
+        """[num_envs * num_bodies, 13]. Legged robots only.
+
+        Each row is body-origin position, scalar-last orientation, body-origin
+        world linear velocity, and world angular velocity.
 
         Raises NotImplementedError for backends/configs that don't need it.
         """
@@ -122,6 +129,76 @@ class SimBackend(ABC):
         """
         raise NotImplementedError
 
+    # ── Domain parameters ─────────────────────────────────────────────────
+
+    @property
+    def contact_friction(self) -> torch.Tensor:
+        """[num_envs] effective sliding-friction coefficients.
+
+        Backends expose the values most recently applied to their native
+        physics representation. Tasks and evaluation code may cache this
+        tensor, so implementations keep it persistent.
+        """
+        raise NotImplementedError
+
+    def set_contact_friction(
+        self,
+        env_ids: torch.Tensor,
+        coefficients: torch.Tensor,
+    ) -> None:
+        """Apply one effective sliding-friction coefficient per environment."""
+        raise NotImplementedError
+
+    def _prepare_contact_friction_update(
+        self,
+        env_ids: torch.Tensor,
+        coefficients: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Move a friction update to the backend device and match its shape."""
+        ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device).flatten()
+        values = torch.as_tensor(
+            coefficients, dtype=torch.float, device=self.device
+        ).flatten()
+        if ids.numel() != values.numel():
+            raise ValueError(
+                "one contact-friction coefficient is required per environment: "
+                f"{ids.numel()} ids vs {values.numel()} values"
+            )
+        return ids, values
+
+    @property
+    def link_mass(self) -> torch.Tensor:
+        """[num_envs, num_bodies] applied robot-link masses in kilograms."""
+        raise NotImplementedError
+
+    @property
+    def link_inertia(self) -> torch.Tensor:
+        """[num_envs, num_bodies, 3] applied diagonal link inertias."""
+        raise NotImplementedError
+
+    def set_link_mass_scale(
+        self,
+        env_ids: torch.Tensor,
+        scales: torch.Tensor,
+    ) -> None:
+        """Scale each canonical link's nominal mass and diagonal inertia."""
+        raise NotImplementedError
+
+    def _prepare_link_mass_scale_update(
+        self,
+        env_ids: torch.Tensor,
+        scales: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device).flatten()
+        values = torch.as_tensor(scales, dtype=torch.float, device=self.device)
+        expected = (ids.numel(), self.num_bodies)
+        if values.shape != expected:
+            raise ValueError(
+                "one link-mass scale is required per environment and canonical "
+                f"body: expected {expected}, got {tuple(values.shape)}"
+            )
+        return ids, values
+
     # ── Per-step ────────────────────────────────────────────────────────────
 
     @abstractmethod
@@ -138,18 +215,14 @@ class SimBackend(ABC):
     # ── Reset ───────────────────────────────────────────────────────────────
 
     @abstractmethod
-    def reset_dof_state(self, env_ids: torch.Tensor) -> None:
-        """Commit the current dof_pos[env_ids] / dof_vel[env_ids] values to
-        the simulator for the specified environments.
+    def reset_state(self, reset_mask: torch.Tensor) -> None:
+        """Commit selected rows of the current robot state atomically.
 
-        The caller writes the desired state into the tensor views before
-        calling this method.
-        """
-
-    def reset_root_state(self, env_ids: torch.Tensor) -> None:
-        """Commit root_states[env_ids] to the simulator.
-
-        Default no-op — fixed-base robots don't need this.
+        The caller writes the desired DOF and, for floating-base robots, root
+        state into the public tensor views before calling this method. Scalar
+        joint positions outside an asset limit are clamped to that limit, and
+        the public tensor reflects the applied state. Backends perform one
+        native commit/forward for the complete state transaction.
         """
 
     def set_all_root_states(self) -> None:

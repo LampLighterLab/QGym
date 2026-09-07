@@ -199,3 +199,35 @@ def test_coupling():
         tau_ff.unsqueeze(0),
     ).squeeze(0)
     assert torch.allclose(tau, tau_act, atol=1e-4)
+
+
+def test_sampled_history_update_preserves_unselected_environments():
+    robot = MIT_Humanoid.__new__(MIT_Humanoid)
+    robot.num_dof = 2
+    robot.sampled_history_threshold = 2
+    robot.sampled_history_counter = torch.tensor([0, 1, 2])
+    robot.dof_pos_target = torch.tensor([[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]])
+    robot.dof_pos = robot.dof_pos_target + 100.0
+    robot.dof_vel = robot.dof_pos_target + 200.0
+    robot.sampled_history_dof_pos_target = torch.arange(18.0).reshape(3, 6)
+    robot.sampled_history_dof_pos = robot.sampled_history_dof_pos_target + 100.0
+    robot.sampled_history_dof_vel = robot.sampled_history_dof_pos_target + 200.0
+    before = (
+        robot.sampled_history_dof_pos_target.clone(),
+        robot.sampled_history_dof_pos.clone(),
+        robot.sampled_history_dof_vel.clone(),
+    )
+
+    robot._update_sampled_history_buffers()
+
+    histories = (
+        (robot.sampled_history_dof_pos_target, robot.dof_pos_target),
+        (robot.sampled_history_dof_pos, robot.dof_pos),
+        (robot.sampled_history_dof_vel, robot.dof_vel),
+    )
+    for (history, current), previous in zip(histories, before):
+        torch.testing.assert_close(history[[0, 2]], previous[[0, 2]])
+        expected = torch.roll(previous[1], robot.num_dof)
+        expected[: robot.num_dof] = current[1]
+        torch.testing.assert_close(history[1], expected)
+    assert torch.equal(robot.sampled_history_counter, torch.tensor([1, 0, 3]))

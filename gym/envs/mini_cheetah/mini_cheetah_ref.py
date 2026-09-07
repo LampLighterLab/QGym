@@ -3,6 +3,7 @@ import pandas as pd
 
 
 from gym.utils.sampling import torch_rand_float
+from gym.utils.sampling import masked_update
 from gym.utils.torch_quat import to_torch
 
 from gym import GYM_ROOT_DIR
@@ -62,11 +63,15 @@ class MiniCheetahRef(MiniCheetah):
         #         "feet body group and reference leg groups must have the same length"
         #     )
 
-    def _reset_system(self, env_ids):
-        super()._reset_system(env_ids)
-        self.phase[env_ids] = torch_rand_float(
-            0, 2 * torch.pi, shape=self.phase[env_ids].shape, device=self.device
+    def _reset_system(self, reset_mask):
+        super()._reset_system(reset_mask)
+        phase = torch_rand_float(
+            0,
+            2 * torch.pi,
+            shape=self.phase.shape,
+            device=self.device,
         )
+        masked_update(self.phase, phase, reset_mask)
 
     def _post_physics_step(self):
         super()._post_physics_step()
@@ -81,40 +86,43 @@ class MiniCheetahRef(MiniCheetah):
         )
         self._update_cmd_switch()
 
-    def _resample_commands(self, env_ids):
-        super()._resample_commands(env_ids)
-        axis_aligned_fraction = getattr(self.cfg.commands, "axis_aligned_fraction", 0.0)
+    def _resample_commands(self, command_mask):
+        super()._resample_commands(command_mask)
+        axis_aligned_fraction = self.cfg.commands.axis_aligned_fraction
         if axis_aligned_fraction:
-            axis_aligned = (
-                torch.rand(len(env_ids), device=self.device) < axis_aligned_fraction
+            axis_aligned = command_mask & (
+                torch.rand(self.num_envs, device=self.device) < axis_aligned_fraction
             )
-            selected_ids = env_ids[axis_aligned]
             selected_axes = torch.randint(
                 0,
                 3,
-                (len(selected_ids), 1),
+                (self.num_envs, 1),
                 device=self.device,
             )
-            command_mask = torch.zeros(
-                len(selected_ids),
-                3,
+            axis_mask = torch.zeros(
+                self.num_envs,
+                self.commands.shape[1],
                 dtype=self.commands.dtype,
                 device=self.device,
             )
-            command_mask.scatter_(1, selected_axes, 1.0)
-            self.commands[selected_ids, :3] *= command_mask
+            axis_mask.scatter_(1, selected_axes, 1.0)
+            keep_axes = torch.where(
+                axis_aligned.unsqueeze(1),
+                axis_mask,
+                torch.ones_like(axis_mask),
+            )
+            self.commands.mul_(keep_axes)
         # * with 10% chance, reset to 0 commands
-        rand_ids = torch_rand_float(
-            0, 1, (len(env_ids), 1), device=self.device
-        ).squeeze(1)
-        self.commands[env_ids, :3] *= (rand_ids < 0.9).unsqueeze(1)
+        zero_commands = command_mask & (
+            torch.rand(self.num_envs, device=self.device) >= 0.9
+        )
+        self.commands.masked_fill_(zero_commands.unsqueeze(1), 0.0)
 
     def _check_terminations_and_timeouts(self):
         """Check if environments need to be reset"""
         contact_forces = self.contact_forces[:, self.termination_contact_indices, :]
         self.terminated |= torch.any(torch.norm(contact_forces, dim=-1) > 1.0, dim=1)
         self.timed_out = self.episode_length_buf >= self.max_episode_length
-        # self.to_be_reset = self.timed_out | self.terminated
 
     # ---
 

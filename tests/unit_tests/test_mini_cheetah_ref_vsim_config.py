@@ -62,16 +62,17 @@ def test_vsim_tuning_samples_axis_aligned_commands():
     task = MiniCheetahRef.__new__(MiniCheetahRef)
     task.cfg = MiniCheetahRefVSimCfg()
     task.device = "cpu"
+    task.num_envs = num_envs
     task.commands = torch.zeros(num_envs, 3)
     task.command_ranges = {
         "lin_vel_x": task.cfg.commands.ranges.lin_vel_x,
         "lin_vel_y": task.cfg.commands.ranges.lin_vel_y,
         "yaw_vel": task.cfg.commands.ranges.yaw_vel,
     }
-    env_ids = torch.arange(num_envs)
+    command_mask = torch.ones(num_envs, dtype=torch.bool)
 
     torch.manual_seed(7)
-    task._resample_commands(env_ids)
+    task._resample_commands(command_mask)
 
     active_axes = torch.count_nonzero(task.commands, dim=1)
     pure_lateral = (active_axes == 1) & (task.commands[:, 1] != 0)

@@ -36,6 +36,11 @@ Do not infer behavior from a config field alone; find its consumer.
   and use clean observations. Noise belongs only in rollout collection.
 - Update observation statistics once per fresh rollout population. Freeze them
   during repeated optimizer epochs, and save/load them with the policy.
+- Trace tensor provenance before adding validation. Validate external config
+  and public interface inputs, but trust tensors that the immediately preceding
+  internal code constructed to a known shape, dtype, and device. Do not recast
+  and then verify them before assignment; direct tensor operations already fail
+  when an internal invariant is wrong.
 
 ## Rewards
 

@@ -21,6 +21,7 @@ import pytest
 import torch
 
 from gym import GYM_ROOT_DIR
+from gym.envs.base.domain_randomization import DomainRandomizationCfg
 from tests.unit_tests.conftest import vsim_guard
 
 pytestmark = pytest.mark.vsim
@@ -43,7 +44,12 @@ def _make_cfg(damping: float) -> types.SimpleNamespace:
         terminate_after_contacts_on=[],
     )
     sim = types.SimpleNamespace(gravity=[0.0, 0.0, -GRAVITY])
-    return types.SimpleNamespace(asset=asset, sim=sim, sim_dt=SIM_DT)
+    return types.SimpleNamespace(
+        asset=asset,
+        domain_randomization=DomainRandomizationCfg(),
+        sim=sim,
+        sim_dt=SIM_DT,
+    )
 
 
 def _energy(dof_pos, dof_vel):
@@ -62,7 +68,7 @@ def test_small_oscillation_period_matches_analytic():
     try:
         b.dof_pos[:] = math.pi + 0.1
         b.dof_vel[:] = 0.0
-        b.reset_dof_state(torch.arange(4, device=b.device))
+        b.reset_state(torch.ones(4, dtype=torch.bool, device=b.device))
 
         torques = torch.zeros(4, 1, device=b.device)
         crossings = []
@@ -106,7 +112,7 @@ def test_damped_envelope_matches_mujoco_cpu():
         backend.setup(_make_cfg(damping=1.0), n_envs, device, task=None)
         backend.dof_pos[:] = q0.to(device)
         backend.dof_vel[:] = qd0.to(device)
-        backend.reset_dof_state(torch.arange(n_envs, device=device))
+        backend.reset_state(torch.ones(n_envs, dtype=torch.bool, device=device))
         torques = torch.zeros(n_envs, 1, device=device)
         env_curve = []
         for step in range(1, n_steps + 1):

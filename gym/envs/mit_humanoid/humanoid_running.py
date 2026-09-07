@@ -1,6 +1,7 @@
 import torch
 
 from gym.envs import LeggedRobot
+from gym.utils.sampling import masked_update
 from gym.utils.torch_quat import quat_rotate_inverse
 
 
@@ -88,13 +89,17 @@ class HumanoidRunning(LeggedRobot):
         self.dof_pos_target[:, :10] = self.dof_pos_target_legs
         self.dof_pos_target[:, 10:] = self.dof_pos_target_arms
 
-    def _reset_system(self, env_ids):
-        super()._reset_system(env_ids)
+    def _reset_system(self, reset_mask):
+        super()._reset_system(reset_mask)
         if self.cfg.commands.resampling_time == -1:
-            self.commands[env_ids, :] = 0.0
-        self.phase[env_ids, 0] = torch.rand(
-            (torch.numel(env_ids),), requires_grad=False, device=self.device
+            self.commands.masked_fill_(reset_mask.unsqueeze(1), 0.0)
+        phase = torch.rand(
+            self.num_envs,
+            1,
+            requires_grad=False,
+            device=self.device,
         )
+        masked_update(self.phase, phase, reset_mask)
 
     def _post_physics_step(self):
         """Update phase state after each physics step."""
@@ -133,16 +138,14 @@ class HumanoidRunning(LeggedRobot):
                 self._rigid_body_ang_vel[:, self.end_effector_ids][:, index, :],
             )
 
-    def _resample_commands(self, env_ids):
-        super()._resample_commands(env_ids)
-        select = torch.norm(self.commands[:, 0:2], dim=-1, keepdim=True) < 0.5
-        self.commands[:, 0:2] = torch.where(
-            select, 0.0 * self.commands[:, 0:2], self.commands[:, 0:2]
+    def _resample_commands(self, command_mask):
+        super()._resample_commands(command_mask)
+        select = command_mask.unsqueeze(1) & (
+            torch.norm(self.commands[:, 0:2], dim=-1, keepdim=True) < 0.5
         )
-        select = torch.abs(self.commands[:, 2:3]) < 0.5
-        self.commands[:, 2:3] = torch.where(
-            select, 0.0 * self.commands[:, 2:3], self.commands[:, 2:3]
-        )
+        self.commands[:, 0:2].masked_fill_(select, 0.0)
+        select = command_mask.unsqueeze(1) & (torch.abs(self.commands[:, 2:3]) < 0.5)
+        self.commands[:, 2:3].masked_fill_(select, 0.0)
 
     def _check_terminations_and_timeouts(self):
         """Check if environments need to be reset"""
@@ -156,8 +159,6 @@ class HumanoidRunning(LeggedRobot):
         self.terminated |= (self.projected_gravity[:, 0:1].abs() > 0.7).any(dim=1)
         self.terminated |= (self.projected_gravity[:, 1:2].abs() > 0.7).any(dim=1)
         self.terminated |= (self.base_pos[:, 2:3] < 0.3).any(dim=1)
-
-        self.to_be_reset = self.timed_out | self.terminated
 
     # ########################## REWARDS ######################## #
 

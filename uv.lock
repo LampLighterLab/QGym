@@ -1198,7 +1198,7 @@ gpu = [
     { name = "mujoco-warp" },
 ]
 vsim = [
-    { name = "vlearn" },
+    { name = "vlearn", marker = "python_full_version < '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 
 [package.dev-dependencies]
@@ -1220,7 +1220,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "tensordict" },
     { name = "torch" },
-    { name = "vlearn", marker = "extra == 'vsim'", path = "thirdparty/vlearn/vlearn-0.3.12-cp311-cp311-linux_x86_64.whl" },
+    { name = "vlearn", marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'vsim'", path = "thirdparty/vlearn/vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl" },
     { name = "wandb" },
 ]
 provides-extras = ["gpu", "vsim"]
@@ -1464,10 +1464,10 @@ wheels = [
 
 [[package]]
 name = "vlearn"
-version = "0.3.12"
-source = { path = "thirdparty/vlearn/vlearn-0.3.12-cp311-cp311-linux_x86_64.whl" }
+version = "0.3.14+cu130"
+source = { path = "thirdparty/vlearn/vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl" }
 wheels = [
-    { filename = "vlearn-0.3.12-cp311-cp311-linux_x86_64.whl", hash = "sha256:6815fb72efd469cf2aa509d2380de613c0c8b13e71120cd4c292e103124f444b" },
+    { filename = "vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl", hash = "sha256:09a37fc404c004463c57e6fcd27bece97f440208a8a37eaec6e12b89635cea9f" },
 ]
 
 [package.metadata]

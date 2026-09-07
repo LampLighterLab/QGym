@@ -15,15 +15,23 @@ also write a human-readable JSON summary.
 """
 
 import argparse
+import copy
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import types
 
 import numpy as np
 import torch
 
-from gym import GYM_ROOT_DIR
+from gym.envs.base.domain_randomization import (
+    DOMAIN_RANDOMIZATION_MODES,
+    apply_domain_randomization_override,
+    get_domain_randomization_range,
+    set_domain_randomization_range,
+)
 from gym.utils.helpers import class_to_dict, set_seed
 from gym.utils.legged_eval_metrics import (
     LeggedMetricAccumulator,
@@ -33,11 +41,18 @@ from gym.utils.legged_eval_metrics import (
     summarize_metrics,
     velocity_impulse_schedule,
 )
-from gym.utils.legged_signal_analysis import urdf_total_mass
 from gym.utils.original_cfg import load_original_cfgs_from_run, original_cfg_source_dir
 from gym.utils.policy_io import state_component_names, state_component_scales
 from gym.utils.task_registry import task_registry
 from gym.utils.torch_quat import quat_rotate_inverse
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def resolve_ckpt(path):
@@ -62,9 +77,9 @@ def resolve_ckpt(path):
 
 def set_deterministic_basic_state(env):
     """Make the basic-mode robot state, command, and gait phase device-independent."""
-    env_ids = torch.arange(env.num_envs, device=env.device)
+    reset_mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     with torch.no_grad():
-        env._reset_system(env_ids)
+        env._reset_system(reset_mask)
         for name in ("dof_pos_target", "dof_vel_target", "tau_ff", "dof_pos_history"):
             if hasattr(env, name):
                 getattr(env, name).zero_()
@@ -92,6 +107,9 @@ def set_deterministic_basic_state(env):
             env.phase.zero_()
             env.phase_obs[:, 0] = 0.0
             env.phase_obs[:, 1] = 1.0
+            if hasattr(env, "phase_frequency"):
+                low, high = map(float, env.cfg.control.gait_freq)
+                env.phase_frequency.fill_(0.5 * (low + high))
             if hasattr(env, "_update_gait_reference"):
                 env._update_gait_reference()
             if hasattr(env, "_update_cmd_switch"):
@@ -99,6 +117,162 @@ def set_deterministic_basic_state(env):
 
         env.episode_length_buf.zero_()
         env._reset_buffers()
+
+
+def configure_contact_friction_grid(env_cfg, friction_grid):
+    """Configure native per-environment friction storage before backend setup."""
+    if friction_grid is None:
+        return
+    set_domain_randomization_range(
+        env_cfg,
+        "contact_friction_range",
+        [float(value) for value in friction_grid],
+    )
+
+
+def configure_contact_friction_dr(env_cfg, mode, friction_grid=None):
+    """Resolve friction DR before backend topology is created."""
+    if mode == "off" and friction_grid is not None:
+        raise ValueError("contact-friction DR off cannot be combined with a grid")
+    if mode == "off":
+        set_domain_randomization_range(env_cfg, "contact_friction_range", None)
+        return
+    if friction_grid is not None:
+        set_domain_randomization_range(
+            env_cfg,
+            "contact_friction_range",
+            [float(value) for value in friction_grid],
+        )
+    if (
+        mode == "on"
+        and get_domain_randomization_range(env_cfg, "contact_friction_range") is None
+    ):
+        raise ValueError(
+            "contact-friction DR on requires a configured range or explicit grid"
+        )
+    if mode not in ("config", "on"):
+        raise ValueError(f"unknown contact-friction DR mode {mode!r}")
+
+
+def crossed_contact_friction_grid(command_cases, low, high):
+    """Give every command case the same evenly spaced friction levels."""
+    command_cases = np.asarray(command_cases)
+    values = np.empty(len(command_cases), dtype=np.float32)
+    for command_case in dict.fromkeys(command_cases.tolist()):
+        indices = np.flatnonzero(command_cases == command_case)
+        values[indices] = np.linspace(low, high, len(indices), dtype=np.float32)
+    return values
+
+
+def crossed_parameter_samples(command_cases, low, high, width, seed):
+    """Give every command case the same deterministic parameter samples."""
+    command_cases = np.asarray(command_cases)
+    values = np.empty((len(command_cases), width), dtype=np.float32)
+    case_indices = [
+        np.flatnonzero(command_cases == command_case)
+        for command_case in dict.fromkeys(command_cases.tolist())
+    ]
+    sample_count = max(map(len, case_indices))
+    samples = (
+        np.random.default_rng(seed)
+        .uniform(low, high, size=(sample_count, width))
+        .astype(np.float32)
+    )
+    for indices in case_indices:
+        values[indices] = samples[: len(indices)]
+    return values
+
+
+def configure_scale_range(env_cfg, name, values):
+    """Replace one enabled episodic tensor range before task setup."""
+    if values is None:
+        return
+    if get_domain_randomization_range(env_cfg, name) is None:
+        raise ValueError(f"{name} is disabled by the selected DR mode")
+    set_domain_randomization_range(env_cfg, name, [float(value) for value in values])
+
+
+def apply_parameter_samples(
+    env,
+    command_cases,
+    seed,
+    stiffness_range=None,
+    damping_range=None,
+    link_mass_range=None,
+):
+    """Apply deterministic, command-balanced PD and mass samples."""
+    randomizer = env.domain_randomizer
+    num_envs = env.num_envs
+    if stiffness_range is None:
+        stiffness_t = randomizer.episode_scale("p_gains")
+        stiffness = (
+            np.ones((num_envs, env.num_actuators), dtype=np.float32)
+            if stiffness_t is None
+            else stiffness_t.detach().cpu().numpy().astype(np.float32, copy=True)
+        )
+    else:
+        stiffness = crossed_parameter_samples(
+            command_cases, *stiffness_range, env.num_actuators, seed + 101
+        )
+        stiffness_t = torch.as_tensor(stiffness, device=env.device)
+        randomizer.set_episode_scale(
+            "p_gains",
+            torch.ones(num_envs, dtype=torch.bool, device=env.device),
+            stiffness_t,
+        )
+
+    if damping_range is None:
+        damping_t = randomizer.episode_scale("d_gains")
+        damping = (
+            np.ones((num_envs, env.num_actuators), dtype=np.float32)
+            if damping_t is None
+            else damping_t.detach().cpu().numpy().astype(np.float32, copy=True)
+        )
+    else:
+        damping = crossed_parameter_samples(
+            command_cases, *damping_range, env.num_actuators, seed + 202
+        )
+        damping_t = torch.as_tensor(damping, device=env.device)
+        randomizer.set_episode_scale(
+            "d_gains",
+            torch.ones(num_envs, dtype=torch.bool, device=env.device),
+            damping_t,
+        )
+
+    if link_mass_range is None:
+        link_mass_t = randomizer.link_mass_scale
+        link_mass = (
+            np.ones((num_envs, env.num_bodies), dtype=np.float32)
+            if link_mass_t is None
+            else link_mass_t.detach().cpu().numpy().astype(np.float32, copy=True)
+        )
+    else:
+        link_mass = crossed_parameter_samples(
+            command_cases, *link_mass_range, env.num_bodies, seed + 303
+        )
+        link_mass_t = torch.as_tensor(link_mass, device=env.device)
+        randomizer.link_mass_scale.copy_(link_mass_t)
+        env._backend.set_link_mass_scale(
+            torch.arange(num_envs, device=env.device), link_mass_t
+        )
+    return stiffness, damping, link_mass
+
+
+def current_contact_friction(env):
+    """Return one recorded contact coefficient per environment.
+
+    Fixed-base tasks do not construct ``DomainRandomizer`` because contacts are
+    disabled for them.  Retain the evaluator's general-task behavior by
+    recording their configured nominal coefficient instead.
+    """
+    randomizer = getattr(env, "domain_randomizer", None)
+    if randomizer is None:
+        terrain = getattr(env.cfg, "terrain", None)
+        nominal = float(getattr(terrain, "dynamic_friction", 1.0))
+        return np.full(env.num_envs, nominal, dtype=np.float32)
+    return (
+        randomizer.contact_friction.detach().cpu().numpy().astype(np.float32, copy=True)
+    )
 
 
 def build(
@@ -110,6 +284,16 @@ def build(
     ckpt,
     reset_mode,
     seed,
+    contact_friction_grid=None,
+    contact_friction_dr="config",
+    original_cfg=False,
+    mujoco_njmax=None,
+    domain_randomization="config",
+    stiffness_scale_range=None,
+    damping_scale_range=None,
+    link_mass_scale_range=None,
+    control_at_sim_frequency=False,
+    mujoco_geom_solref=None,
 ):
     import gym.envs  # noqa: F401 — registers tasks
 
@@ -120,7 +304,41 @@ def build(
         if root * root != num_envs:
             raise ValueError(f"num_envs must be a perfect square; got {num_envs}")
 
-    env_cfg, train_cfg = task_registry.get_cfgs(task)
+    checkpoint_path = resolve_ckpt(ckpt)
+    if original_cfg:
+        registered_env_cfg, registered_train_cfg = load_original_cfgs_from_run(
+            task, Path(checkpoint_path).parent
+        )
+    else:
+        registered_env_cfg, registered_train_cfg = task_registry.get_cfgs(task)
+    # Registry configs are process-wide instances. Evaluation overrides must
+    # not leak into a later programmatic build in the same process.
+    env_cfg = copy.deepcopy(registered_env_cfg)
+    train_cfg = copy.deepcopy(registered_train_cfg)
+    if mujoco_geom_solref is not None:
+        env_cfg.mjspec_geom_attributes = types.SimpleNamespace(
+            solref=mujoco_geom_solref
+        )
+    configure_contact_friction_dr(
+        env_cfg,
+        contact_friction_dr,
+        contact_friction_grid,
+    )
+    if domain_randomization == "off" and contact_friction_grid is not None:
+        raise ValueError(
+            "domain randomization off cannot be combined with a friction grid"
+        )
+    if contact_friction_dr != "config" and domain_randomization != "config":
+        raise ValueError(
+            "contact-friction and domain-randomization overrides cannot both "
+            "be explicit"
+        )
+    apply_domain_randomization_override(env_cfg, domain_randomization)
+    configure_scale_range(env_cfg, "p_gains", stiffness_scale_range)
+    configure_scale_range(env_cfg, "d_gains", damping_scale_range)
+    configure_scale_range(env_cfg, "link_mass_scale_range", link_mass_scale_range)
+    if mujoco_njmax is not None:
+        env_cfg.mjspec_attributes.njmax = int(mujoco_njmax)
     env_cfg.env.num_envs = num_envs
     env_cfg.init_state.reset_mode = reset_mode
     # Keep the eval controlled: no pushes, fixed commands for the whole episode.
@@ -128,6 +346,8 @@ def build(
         env_cfg.push_robots.toggle = False
     if hasattr(env_cfg, "commands"):
         env_cfg.commands.resampling_time = t_end + 10.0
+    if control_at_sim_frequency:
+        env_cfg.control.ctrl_frequency = env_cfg.control.desired_sim_frequency
     # reset_to_uniform runs one long episode; range-reset legged eval keeps the
     # task's own episode length so survival-to-timeout is meaningful.
     if reset_mode == "reset_to_uniform":
@@ -147,7 +367,7 @@ def build(
         task, env_cfg, device=eval_device, headless=True, backend=eval_backend
     )
     runner = task_registry.make_alg_runner(env, train_cfg)
-    runner.load(resolve_ckpt(ckpt), load_optimizer=False)
+    runner.load(checkpoint_path, load_optimizer=False)
     runner.switch_to_eval()
     if reset_mode == "reset_to_basic":
         set_deterministic_basic_state(env)
@@ -208,6 +428,67 @@ def main():
         help="contact-force threshold in newtons for gait-quality metrics",
     )
     p.add_argument(
+        "--contact_friction_grid",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        default=None,
+        help="evaluate an explicit crossed friction grid. Every command case "
+        "receives the same evenly spaced LOW..HIGH levels; LOW=HIGH is a "
+        "fixed-friction domain.",
+    )
+    p.add_argument(
+        "--contact-friction-dr",
+        choices=["config", "on", "off"],
+        default="config",
+        help="Use the task config, require friction DR, or disable it before setup.",
+    )
+    p.add_argument(
+        "--domain-randomization",
+        choices=DOMAIN_RANDOMIZATION_MODES,
+        default="config",
+        help="Use the configured DR bundle, disable every axis, or isolate "
+        "friction, PD gains, or link mass.",
+    )
+    p.add_argument(
+        "--stiffness-scale-range",
+        "--stiffness-scale-grid",
+        dest="stiffness_scale_range",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        help="deterministically sample per-actuator stiffness scales from LOW..HIGH",
+    )
+    p.add_argument(
+        "--damping-scale-range",
+        "--damping-scale-grid",
+        dest="damping_scale_range",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        help="deterministically sample per-actuator damping scales from LOW..HIGH",
+    )
+    p.add_argument(
+        "--link-mass-scale-range",
+        "--link-mass-scale-grid",
+        dest="link_mass_scale_range",
+        type=float,
+        nargs=2,
+        metavar=("LOW", "HIGH"),
+        help="deterministically sample per-link mass/inertia scales from LOW..HIGH",
+    )
+    p.add_argument(
+        "--original_cfg",
+        action="store_true",
+        help="Load the environment and runner configs saved beside the checkpoint.",
+    )
+    p.add_argument(
+        "--mujoco_njmax",
+        type=int,
+        default=None,
+        help="Override MuJoCo/Warp constraint capacity for evaluation.",
+    )
+    p.add_argument(
         "--velocity_impulse",
         type=float,
         default=0.0,
@@ -241,15 +522,24 @@ def main():
     )
 
     checkpoint_path = os.path.abspath(resolve_ckpt(args.ckpt))
+    checkpoint_sha256 = sha256_file(checkpoint_path)
     env, runner = build(
-        args.task,
-        args.eval_backend,
-        args.eval_device,
-        args.num_envs,
-        args.t_end,
-        checkpoint_path,
-        args.reset_mode,
-        args.seed,
+        task=args.task,
+        eval_backend=args.eval_backend,
+        eval_device=args.eval_device,
+        num_envs=args.num_envs,
+        t_end=args.t_end,
+        ckpt=checkpoint_path,
+        reset_mode=args.reset_mode,
+        seed=args.seed,
+        contact_friction_grid=args.contact_friction_grid,
+        contact_friction_dr=args.contact_friction_dr,
+        original_cfg=args.original_cfg,
+        mujoco_njmax=args.mujoco_njmax,
+        domain_randomization=args.domain_randomization,
+        stiffness_scale_range=args.stiffness_scale_range,
+        damping_scale_range=args.damping_scale_range,
+        link_mass_scale_range=args.link_mass_scale_range,
     )
     weights = runner.critic_cfg["reward"]["weights"]  # {term: weight}, zeros removed
     terms = list(weights)
@@ -263,11 +553,8 @@ def main():
     if args.contact_threshold <= 0:
         raise ValueError("contact_threshold must be positive")
     control_frequency = float(env.cfg.control.ctrl_frequency)
-    robot_mass_kg = (
-        None
-        if is_pendulum
-        else urdf_total_mass(env.cfg.asset.file.format(GYM_ROOT_DIR=GYM_ROOT_DIR))
-    )
+    applied_link_mass = None
+    robot_mass_kg = None
     if args.velocity_impulse < 0:
         raise ValueError("velocity_impulse cannot be negative")
     if args.impulse_directions <= 0:
@@ -297,6 +584,41 @@ def main():
         if is_pendulum
         else apply_command_profile(env, args.command_profile)
     )
+    if args.contact_friction_grid is not None:
+        friction_low, friction_high = args.contact_friction_grid
+        applied_contact_friction = crossed_contact_friction_grid(
+            command_cases,
+            friction_low,
+            friction_high,
+        )
+        all_env_ids = torch.arange(N, dtype=torch.long, device=dev)
+        env._backend.set_contact_friction(
+            all_env_ids,
+            torch.as_tensor(applied_contact_friction, device=dev),
+        )
+    else:
+        applied_contact_friction = current_contact_friction(env)
+    if is_pendulum:
+        applied_stiffness_scale = None
+        applied_damping_scale = None
+        applied_link_mass_scale = None
+    else:
+        (
+            applied_stiffness_scale,
+            applied_damping_scale,
+            applied_link_mass_scale,
+        ) = apply_parameter_samples(
+            env,
+            command_cases,
+            args.seed,
+            args.stiffness_scale_range,
+            args.damping_scale_range,
+            args.link_mass_scale_range,
+        )
+        applied_link_mass = (
+            env._backend.link_mass.detach().cpu().numpy().astype(np.float32)
+        )
+        robot_mass_kg = applied_link_mass.sum(axis=1)
     eval_commands = (
         None
         if is_pendulum
@@ -405,16 +727,6 @@ def main():
                 actions,
                 runner.actor_cfg["disable_actions"],
             )
-            if applied_actions is not None:
-                applied_actions[k] = (
-                    torch.cat(
-                        [getattr(env, name) for name in runner.actor_cfg["actions"]],
-                        dim=-1,
-                    )
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
             impulse_envs = np.flatnonzero(impulse_steps == k)
             if len(impulse_envs):
                 impulse_envs_device = torch.as_tensor(
@@ -458,6 +770,16 @@ def main():
             else:
                 upright[k] = env.projected_gravity[:, 2].detach().cpu().numpy()
             env.step()
+            if applied_actions is not None:
+                applied_actions[k] = (
+                    torch.cat(
+                        [getattr(env, name) for name in runner.actor_cfg["actions"]],
+                        dim=-1,
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
             term = env.terminated
             if legged_accumulator is not None:
                 legged_accumulator.update(k, alive_before_step & ~term)
@@ -515,11 +837,21 @@ def main():
             "upright": upright,
             "command_case": command_cases,
             "eval_commands": eval_commands,
+            "phase_frequency_hz": (
+                env.phase_frequency.detach().cpu().numpy().astype(np.float32)
+                if hasattr(env, "phase_frequency")
+                else np.full(N, np.nan, dtype=np.float32)
+            ),
             "hardware_metric_names": np.asarray(list(hardware_metrics)),
             "hardware_metric_metadata": np.asarray(json.dumps(metric_metadata())),
             "actuated_dof_names": np.asarray(env.actuated_dof_names),
+            "body_names": np.asarray(env.robot_layout.body_names),
             "foot_names": np.asarray(env.robot_layout.body_groups["feet"]),
-            "robot_mass_kg": np.float32(robot_mass_kg),
+            "link_mass_kg": applied_link_mass,
+            "stiffness_scale": applied_stiffness_scale,
+            "damping_scale": applied_damping_scale,
+            "link_mass_scale": applied_link_mass_scale,
+            "robot_mass_kg": robot_mass_kg,
             "impulse_step": impulse_steps,
             "impulse_direction_rad": impulse_angles,
             "impulse_delta_velocity": impulse_delta_velocity,
@@ -612,36 +944,64 @@ def main():
             )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    np.savez_compressed(
-        args.out,
-        train_label=args.train_label,
-        eval_label=eval_label,
-        task=args.task,
-        checkpoint_path=checkpoint_path,
-        checkpoint_iteration=np.int64(runner.it),
-        reset_mode=args.reset_mode,
-        command_profile=args.command_profile,
-        num_envs=np.int64(N),
-        duration_s=np.float32(args.t_end),
-        seed=np.int64(args.seed),
-        settling_time_s=np.float32(args.settling_time),
-        contact_threshold_n=np.float32(args.contact_threshold),
-        mean_reward=mean_reward.astype(np.float32),
-        survived=survived,
-        ep_len=ep_len.astype(np.float32),
-        base_z=base_z,
-        terminated=terminated,
-        terms=np.array(terms),
-        ctrl_hz=float(env.cfg.control.ctrl_frequency),
-        **{f"term_{t}": per_term_mean[t].astype(np.float32) for t in terms},
-        **extra,
-    )
+    output_path = Path(args.out)
+    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    with temporary_path.open("wb") as output_file:
+        np.savez_compressed(
+            output_file,
+            train_label=args.train_label,
+            eval_label=eval_label,
+            task=args.task,
+            checkpoint_path=checkpoint_path,
+            checkpoint_sha256=checkpoint_sha256,
+            checkpoint_iteration=np.int64(runner.it),
+            reset_mode=args.reset_mode,
+            command_profile=args.command_profile,
+            num_envs=np.int64(N),
+            duration_s=np.float32(args.t_end),
+            seed=np.int64(args.seed),
+            settling_time_s=np.float32(args.settling_time),
+            contact_threshold_n=np.float32(args.contact_threshold),
+            contact_friction_dr=args.contact_friction_dr,
+            domain_randomization=args.domain_randomization,
+            stiffness_scale_range=np.asarray(
+                args.stiffness_scale_range or [np.nan, np.nan], dtype=np.float32
+            ),
+            damping_scale_range=np.asarray(
+                args.damping_scale_range or [np.nan, np.nan], dtype=np.float32
+            ),
+            link_mass_scale_range=np.asarray(
+                args.link_mass_scale_range or [np.nan, np.nan], dtype=np.float32
+            ),
+            original_cfg=np.bool_(args.original_cfg),
+            mujoco_njmax=np.int64(
+                -1 if args.mujoco_njmax is None else args.mujoco_njmax
+            ),
+            contact_friction=applied_contact_friction.astype(np.float32),
+            contact_friction_grid=np.asarray(
+                args.contact_friction_grid
+                if args.contact_friction_grid is not None
+                else [np.nan, np.nan],
+                dtype=np.float32,
+            ),
+            mean_reward=mean_reward.astype(np.float32),
+            survived=survived,
+            ep_len=ep_len.astype(np.float32),
+            base_z=base_z,
+            terminated=terminated,
+            terms=np.array(terms),
+            ctrl_hz=float(env.cfg.control.ctrl_frequency),
+            **{f"term_{t}": per_term_mean[t].astype(np.float32) for t in terms},
+            **extra,
+        )
+    temporary_path.replace(output_path)
     if hardware_metrics:
         summary_path = os.path.splitext(args.out)[0] + ".summary.json"
         summary = {
             "protocol": {
                 "task": args.task,
                 "checkpoint_path": checkpoint_path,
+                "checkpoint_sha256": checkpoint_sha256,
                 "checkpoint_iteration": runner.it,
                 "train_label": args.train_label,
                 "eval_label": eval_label,
@@ -651,7 +1011,19 @@ def main():
                 "settling_time_s": args.settling_time,
                 "command_profile": args.command_profile,
                 "contact_threshold_n": args.contact_threshold,
-                "robot_mass_kg": robot_mass_kg,
+                "contact_friction_grid": args.contact_friction_grid,
+                "contact_friction_dr": args.contact_friction_dr,
+                "domain_randomization": args.domain_randomization,
+                "stiffness_scale_range": args.stiffness_scale_range,
+                "damping_scale_range": args.damping_scale_range,
+                "link_mass_scale_range": args.link_mass_scale_range,
+                "original_cfg": args.original_cfg,
+                "mujoco_njmax": args.mujoco_njmax,
+                "robot_mass_kg": float(np.mean(robot_mass_kg)),
+                "robot_mass_range_kg": [
+                    float(np.min(robot_mass_kg)),
+                    float(np.max(robot_mass_kg)),
+                ],
                 "velocity_impulse_m_per_s": args.velocity_impulse,
                 "impulse_start_time_s": args.impulse_start_time,
                 "impulse_stagger_time_s": args.impulse_stagger_time,

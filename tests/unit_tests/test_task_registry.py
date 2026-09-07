@@ -96,7 +96,7 @@ def test_reset_method_is_resolved_once_during_initialization(task_name):
     try:
         reset_state = env._reset_state
         env.cfg.init_state.reset_mode = "invalid_after_initialization"
-        env._reset_system(torch.arange(env.num_envs, device=env.device))
+        env._reset_system(torch.ones(env.num_envs, dtype=torch.bool, device=env.device))
 
         assert env._reset_state is reset_state
     finally:

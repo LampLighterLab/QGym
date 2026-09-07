@@ -65,9 +65,9 @@ def reset_probe_state(env):
     That step is useful for normal task initialization but would make a fidelity
     probe start from an already-evolved, backend-dependent state.
     """
-    env_ids = torch.arange(env.num_envs, device=env.device)
+    reset_mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     env.dof_pos_target.zero_()
-    env._reset_system(env_ids)
+    env._reset_system(reset_mask)
     env.dof_pos_target.zero_()
 
 
@@ -207,10 +207,10 @@ def _assert_one_env_per_dof(env):
 
 def _set_dof_state(env, dof_pos, dof_vel):
     """Write a canonical joint state and commit it through the backend API."""
-    env_ids = torch.arange(env.num_envs, device=env.device)
+    reset_mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     env.dof_pos.copy_(dof_pos)
     env.dof_vel.copy_(dof_vel)
-    env._backend.reset_dof_state(env_ids)
+    env._backend.reset_state(reset_mask)
 
 
 def _quat_multiply_xyzw(left, right):
@@ -494,12 +494,11 @@ def run_slide(env, n_steps, settle_steps, initial_speed):
         for _ in range(settle_steps):
             env._backend.step(_default_pose_pd_torques(env))
 
-    env_ids = torch.arange(env.num_envs, device=env.device)
+    reset_mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     env.dof_vel.zero_()
     env.root_states[:, 7:13] = 0.0
     env.root_states[:, 7] = initial_speed
-    env._backend.reset_dof_state(env_ids)
-    env._backend.reset_root_state(env_ids)
+    env._backend.reset_state(reset_mask)
 
     buffers = _contact_trace_buffers(env, n_steps)
     _record_contact_trace(env, buffers, 0)

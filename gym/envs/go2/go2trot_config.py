@@ -1,3 +1,5 @@
+import mujoco
+
 from gym.envs.base.legged_robot_config import (
     LeggedRobotCfg,
     LeggedRobotRunnerCfg,
@@ -97,7 +99,7 @@ class Go2TrotCfg(LeggedRobotCfg):
         stiffness = {"hip": 20.0, "thigh": 20.0, "calf": 20.0}
         damping = {"hip": 0.5, "thigh": 0.5, "calf": 0.5}
         ctrl_frequency = 100
-        desired_sim_frequency = 500
+        desired_sim_frequency = 100
         gait_freq = [1.0, 3.0]  # oscillator frequency range [Hz]
         # Cycle offsets define a trot: front-left/rear-right move together,
         # half a cycle away from front-right/rear-left.
@@ -131,11 +133,16 @@ class Go2TrotCfg(LeggedRobotCfg):
         max_push_vel_xy = 0.5
         push_box_dims = [0.3, 0.1, 0.1]  # x,y,z [m]
 
-    class domain_rand:
-        randomize_friction = True
-        friction_range = [0.5, 1.0]
-        randomize_base_mass = False
-        added_mass_range = [-1.0, 1.0]
+    class domain_randomization(LeggedRobotCfg.domain_randomization):
+        class startup(LeggedRobotCfg.domain_randomization.startup):
+            contact_friction_range = [0.5, 1.0]
+            link_mass_scale_range = [0.9, 1.2]
+
+        class episode(LeggedRobotCfg.domain_randomization.episode):
+            scale_ranges = {
+                "p_gains": [0.9, 1.1],
+                "d_gains": [0.8, 1.2],
+            }
 
     class asset(LeggedRobotCfg.asset):
         file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
@@ -148,8 +155,6 @@ class Go2TrotCfg(LeggedRobotCfg):
         disable_motors = False
         joint_damping = 0.01
         rotor_inertia = [0.002268, 0.002268, 0.005484] * 4
-        total_mass = 16.087  # sum of nominal URDF link masses [kg]
-        collapse_fixed_joints = False
 
         class robot_layout:
             version = "go2_v1"
@@ -181,10 +186,16 @@ class Go2TrotCfg(LeggedRobotCfg):
         commands = [3, 1, 3]
 
     class mjspec_attributes:
-        njmax = 130
+        njmax = 256
+
+    class mjspec_geom_attributes:
+        solref = [0.005, 1.0]
 
     class mjspec_option_attributes:
         ccd_iterations = 50
+        # See Go2Cfg: the default MuJoCo 3.11 native multi-contact CCD path
+        # crashes on a valid fallen-pose cylinder/cylinder collision.
+        disableflags = int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
 
 
 class Go2TrotRunnerCfg(LeggedRobotRunnerCfg):
@@ -207,7 +218,7 @@ class Go2TrotRunnerCfg(LeggedRobotRunnerCfg):
         ]
         normalize_obs = False
         actions = ["dof_pos_target"]
-        add_noise = False
+        add_noise = True
         disable_actions = False
 
         class noise:
@@ -286,5 +297,5 @@ class Go2TrotRunnerCfg(LeggedRobotRunnerCfg):
     class runner(LeggedRobotRunnerCfg.runner):
         run_name = ""
         experiment_name = "go2trot"
-        max_iterations = 1000
+        max_iterations = 550
         algorithm_class_name = "PPO2"

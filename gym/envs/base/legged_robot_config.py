@@ -31,6 +31,7 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 from .base_config import BaseConfig
+from .domain_randomization import DomainRandomizationCfg
 
 
 class LeggedRobotCfg(BaseConfig):
@@ -59,6 +60,9 @@ class LeggedRobotCfg(BaseConfig):
         interval_s = 15
         max_push_vel_xy = 0.05
         push_box_dims = [0.2, 0.2, 0.2]  # x,y,z [m]
+
+    class domain_randomization(DomainRandomizationCfg):
+        pass
 
     class init_state:
         # * target state when action = 0, also reset positions for basic mode
