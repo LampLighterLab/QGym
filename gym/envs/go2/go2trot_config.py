@@ -211,7 +211,6 @@ class Go2TrotRunnerCfg(LeggedRobotRunnerCfg):
             "projected_gravity",
             "commands",
             "dof_pos_obs",
-            "dof_pos_history",
             "dof_vel",
             "dof_pos_target",
             "phase_obs",
