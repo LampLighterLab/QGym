@@ -85,7 +85,7 @@ exclude = [
     "__init__.py",
     "logs/",
     "notebooks/",
-    "thirdparty/vlearn/",
+    "thirdparty/",
 ]
 
 line-length = 88

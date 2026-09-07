@@ -21,6 +21,7 @@ from gym.envs.base.mujoco_backend_base import (
     WXYZ_TO_XYZW,
     XYZW_TO_WXYZ,
 )
+from gym.utils.torch_quat import quat_apply, quat_rotate_inverse
 
 
 class MuJocoCPUBackend(MuJocoBackendBase):
@@ -238,7 +239,11 @@ class MuJocoCPUBackend(MuJocoBackendBase):
                 mj_quat = torch.from_numpy(d.qpos[3:7].copy())
                 self._root_states_t[i, 3:7] = mj_quat[WXYZ_TO_XYZW]
                 self._root_states_t[i, 7:10] = torch.from_numpy(d.qvel[:3].copy())
-                self._root_states_t[i, 10:13] = torch.from_numpy(d.qvel[3:6].copy())
+                # Free-joint translation is world-frame, but angular qvel is
+                # body-local. Public root velocities are both world-frame.
+                self._root_states_t[i, 10:13] = quat_apply(
+                    mj_quat[WXYZ_TO_XYZW], torch.from_numpy(d.qvel[3:6].copy())
+                )
 
     # ── Reset ──────────────────────────────────────────────────────────────────
 
@@ -261,7 +266,10 @@ class MuJocoCPUBackend(MuJocoBackendBase):
                 self._datas[i].qpos[:3] = rs[:3].numpy()
                 self._datas[i].qpos[3:7] = rs[3:7][XYZW_TO_WXYZ].numpy()
                 self._datas[i].qvel[:3] = rs[7:10].numpy()
-                self._datas[i].qvel[3:6] = rs[10:13].numpy()
+                # Use the requested orientation, which may change in this reset.
+                self._datas[i].qvel[3:6] = quat_rotate_inverse(
+                    rs[3:7], rs[10:13]
+                ).numpy()
             mujoco.mj_forward(model, self._datas[i])
 
     def set_all_root_states(self) -> None:
@@ -274,7 +282,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             self._datas[i].qpos[:3] = rs[:3].numpy()
             self._datas[i].qpos[3:7] = rs[3:7][XYZW_TO_WXYZ].numpy()
             self._datas[i].qvel[:3] = rs[7:10].numpy()
-            self._datas[i].qvel[3:6] = rs[10:13].numpy()
+            self._datas[i].qvel[3:6] = quat_rotate_inverse(rs[3:7], rs[10:13]).numpy()
             mujoco.mj_forward(model, self._datas[i])
 
     # ── Rendering ─────────────────────────────────────────────────────────────
