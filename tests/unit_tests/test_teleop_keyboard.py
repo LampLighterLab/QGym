@@ -200,6 +200,7 @@ def _pendulum_cfg(show_ui):
     import types
 
     from gym import GYM_ROOT_DIR
+    from gym.envs.base.domain_randomization import DomainRandomizationCfg
 
     return types.SimpleNamespace(
         asset=types.SimpleNamespace(
@@ -217,6 +218,7 @@ def _pendulum_cfg(show_ui):
             penalize_contacts_on=[],
             terminate_after_contacts_on=[],
         ),
+        domain_randomization=DomainRandomizationCfg(),
         sim=types.SimpleNamespace(gravity=[0.0, 0.0, -9.81]),
         sim_dt=0.005,
         viewer=types.SimpleNamespace(show_ui=show_ui),

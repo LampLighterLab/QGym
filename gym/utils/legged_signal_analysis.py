@@ -192,7 +192,9 @@ def analyze_gait_and_grf(
     rpd_mean = np.full((num_envs, 3), np.nan, dtype=np.float32)
     gait_class = np.full(num_envs, "stationary", dtype="<U10")
     grf_by_foot = np.full((num_envs, force_norm.shape[2]), np.nan, dtype=np.float32)
-    body_weight = robot_mass_kg * 9.81
+    body_weight = (
+        np.broadcast_to(np.asarray(robot_mass_kg, dtype=float), (num_envs,)) * 9.81
+    )
 
     for env_index in range(num_envs):
         end = _trajectory_end(alive, env_index)
@@ -203,7 +205,7 @@ def analyze_gait_and_grf(
                 force_z[settle_steps:end, env_index],
                 axis=0,
             )
-            / body_weight
+            / body_weight[env_index]
         )
         grf_by_foot[env_index] = normalized_grf
         metrics["grf_balance_std"][env_index] = np.std(normalized_grf)

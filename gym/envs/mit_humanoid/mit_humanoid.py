@@ -1,6 +1,7 @@
 import torch
 
 from gym.envs.base.legged_robot import LeggedRobot
+from gym.utils.sampling import masked_update
 
 
 class MIT_Humanoid(LeggedRobot):
@@ -74,18 +75,28 @@ class MIT_Humanoid(LeggedRobot):
 
         return torques
 
-    def _reset_system(self, env_ids):
-        if len(env_ids) == 0:
-            return
-        super()._reset_system(env_ids)
-        self._reset_sampled_history_buffers(env_ids)
+    def _reset_system(self, reset_mask):
+        super()._reset_system(reset_mask)
+        self._reset_sampled_history_buffers(reset_mask)
         return
 
-    def _reset_sampled_history_buffers(self, ids):
+    def _reset_sampled_history_buffers(self, reset_mask):
         n = self.cfg.env.sampled_history_length
-        self.sampled_history_dof_pos_target[ids] = self.dof_pos_target[ids].tile(n)
-        self.sampled_history_dof_pos[ids] = self.dof_pos[ids].tile(n)
-        self.sampled_history_dof_vel[ids] = self.dof_vel[ids].tile(n)
+        masked_update(
+            self.sampled_history_dof_pos_target,
+            self.dof_pos_target.tile(1, n),
+            reset_mask,
+        )
+        masked_update(
+            self.sampled_history_dof_pos,
+            self.dof_pos.tile(1, n),
+            reset_mask,
+        )
+        masked_update(
+            self.sampled_history_dof_vel,
+            self.dof_vel.tile(1, n),
+            reset_mask,
+        )
 
     # compute_torques accounting for coupling, and filtering torques
     def _compute_torques(self):
@@ -106,28 +117,17 @@ class MIT_Humanoid(LeggedRobot):
 
     def _update_sampled_history_buffers(self):
         self.sampled_history_counter += 1
-
-        ids = torch.nonzero(
-            self.sampled_history_counter == self.sampled_history_threshold,
-            as_tuple=False,
-        ).flatten()
-
-        self.sampled_history_dof_pos_target[ids] = torch.roll(
-            self.sampled_history_dof_pos_target[ids], self.num_dof, dims=1
-        )  # check
-        self.sampled_history_dof_pos_target[ids, : self.num_dof] = self.dof_pos_target[
-            ids
-        ]
-        self.sampled_history_dof_pos[ids] = torch.roll(
-            self.sampled_history_dof_pos[ids], self.num_dof, dims=1
-        )  # check
-        self.sampled_history_dof_pos[ids, : self.num_dof] = self.dof_pos[ids]
-        self.sampled_history_dof_vel[ids] = torch.roll(
-            self.sampled_history_dof_vel[ids], self.num_dof, dims=1
-        )  # check
-        self.sampled_history_dof_vel[ids, : self.num_dof] = self.dof_vel[ids]
-
-        self.sampled_history_counter[ids] = 0
+        update_mask = self.sampled_history_counter == self.sampled_history_threshold
+        histories = (
+            (self.sampled_history_dof_pos_target, self.dof_pos_target),
+            (self.sampled_history_dof_pos, self.dof_pos),
+            (self.sampled_history_dof_vel, self.dof_vel),
+        )
+        for history, current in histories:
+            candidate = torch.roll(history, self.num_dof, dims=1)
+            candidate[:, : self.num_dof] = current
+            masked_update(history, candidate, update_mask)
+        self.sampled_history_counter.masked_fill_(update_mask, 0)
 
     # --- rewards ---
 

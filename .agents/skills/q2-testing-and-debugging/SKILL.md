@@ -96,6 +96,12 @@ backend. Record what executed.
 7. Update `MIGRATION_PLAN.md` if the finding invalidates or advances campaign
    evidence.
 
+Test meaningful contracts rather than defensive restatements. Before adding a
+type, shape, dtype, or device guard, trace where the value was produced. Keep a
+guard and focused test at an external/config/backend boundary; if the same
+internal path just constructed the value correctly, consume it directly and
+let the operation fail naturally if that invariant is broken.
+
 GitHub CI runs the uv-managed portable and colocated suites, Ruff, and a package
 build. Local validation remains required for smoke training, Warp, and licensed
 VSim evidence.

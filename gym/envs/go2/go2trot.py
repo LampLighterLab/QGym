@@ -1,6 +1,7 @@
 import torch
 
 from gym.utils.sampling import torch_rand_float
+from gym.utils.sampling import masked_update
 
 from gym.envs.base.legged_robot import LeggedRobot
 # from learning.utils.logger.SaveStates import (
@@ -15,6 +16,9 @@ class Go2Trot(LeggedRobot):
     def _init_buffers(self):
         super()._init_buffers()
 
+        self._actuated_dof_pos_limits = self.dof_pos_limits.index_select(
+            0, self.actuated_dof_indices
+        )
         self.phase = torch.zeros(
             self.num_envs, 1, dtype=torch.float, device=self.device
         )
@@ -47,7 +51,6 @@ class Go2Trot(LeggedRobot):
             dtype=torch.float,
             device=self.device,
         )
-        self._body_weight = self.cfg.asset.total_mass * 9.81
         self._update_phase_observation()
         self._update_gait_reference()
 
@@ -72,6 +75,16 @@ class Go2Trot(LeggedRobot):
 
     def _pre_decimation_step(self):
         self._update_gait_reference()
+        reference = self.gait_reference + self.default_dof_pos.index_select(
+            1, self.actuated_dof_indices
+        )
+        # Bound the full PD position command. Keep the applied residual in the
+        # task buffer so observations and action-history rewards describe it;
+        # the runner retains its separate raw samples for PPO likelihoods.
+        self.dof_pos_target.clamp_(
+            min=self._actuated_dof_pos_limits[:, 0] - reference,
+            max=self._actuated_dof_pos_limits[:, 1] - reference,
+        )
 
     def _compute_torques(self):
         pos = self.dof_pos.index_select(1, self.actuated_dof_indices)
@@ -87,53 +100,63 @@ class Go2Trot(LeggedRobot):
             torques, -self.actuated_torque_limits, self.actuated_torque_limits
         ).view(self.torques.shape)
 
-    def _reset_system(self, env_ids):
-        super()._reset_system(env_ids)
-        self.phase[env_ids] = torch_rand_float(
-            0, 2 * torch.pi, shape=self.phase[env_ids].shape, device=self.device
-        )
-        self.phase_frequency[env_ids] = torch_rand_float(
-            self.cfg.control.gait_freq[0],
-            self.cfg.control.gait_freq[1],
-            shape=self.phase_frequency[env_ids].shape,
+    def _reset_system(self, reset_mask):
+        super()._reset_system(reset_mask)
+        phase = torch_rand_float(
+            0,
+            2 * torch.pi,
+            shape=self.phase.shape,
             device=self.device,
         )
+        phase_frequency = torch_rand_float(
+            self.cfg.control.gait_freq[0],
+            self.cfg.control.gait_freq[1],
+            shape=self.phase_frequency.shape,
+            device=self.device,
+        )
+        masked_update(self.phase, phase, reset_mask)
+        masked_update(self.phase_frequency, phase_frequency, reset_mask)
 
-    def _resample_commands(self, env_ids):
-        if len(env_ids) == 0:
-            return
-        super()._resample_commands(env_ids)
+    def _resample_commands(self, command_mask):
+        super()._resample_commands(command_mask)
 
         forward_commands = torch.tensor(
             self.command_ranges["lin_vel_x"], device=self.device
         )
         command_indices = torch.randint(
-            len(forward_commands), (len(env_ids),), device=self.device
+            len(forward_commands),
+            (self.num_envs,),
+            device=self.device,
         )
-        self.commands[env_ids, 0] = forward_commands[command_indices]
-        self.commands[env_ids, 0] += (
-            torch.randn(len(env_ids), device=self.device) * self.cfg.commands.var
+        forward = forward_commands[command_indices] + (
+            torch.randn(self.num_envs, device=self.device) * self.cfg.commands.var
         )
+        masked_update(self.commands[:, 0], forward, command_mask)
 
         if 0 in self.cfg.commands.ranges.lin_vel_x:
             # Include forward-only, rotation-only, and stopped examples.
-            self.commands[env_ids, 1:] *= (
-                torch.rand(len(env_ids), 1, device=self.device) < 0.8
+            drop = command_mask.unsqueeze(1) & (
+                torch.rand(self.num_envs, 1, device=self.device) >= 0.8
             )
-            self.commands[env_ids, :2] *= (
-                torch.rand(len(env_ids), 1, device=self.device) < 0.8
+            self.commands[:, 1:].masked_fill_(drop, 0.0)
+            drop = command_mask.unsqueeze(1) & (
+                torch.rand(self.num_envs, 1, device=self.device) >= 0.8
             )
-            self.commands[env_ids] *= (
-                torch.rand(len(env_ids), 1, device=self.device) < 0.9
+            self.commands[:, :2].masked_fill_(drop, 0.0)
+            drop = command_mask.unsqueeze(1) & (
+                torch.rand(self.num_envs, 1, device=self.device) >= 0.9
             )
+            self.commands.masked_fill_(drop, 0.0)
 
-    def _reset_idx(self, env_ids):
-        super()._reset_idx(env_ids)
-        if len(env_ids) == 0:
-            return
-        self.dof_pos_target[env_ids] = 0.0
+    def _reset_idx(self, reset_mask):
+        super()._reset_idx(reset_mask)
+        self.dof_pos_target.masked_fill_(reset_mask.unsqueeze(1), 0.0)
         self._update_gait_reference()
-        self.dof_pos_history[env_ids] = self.dof_pos_target[env_ids].tile(3)
+        masked_update(
+            self.dof_pos_history,
+            self.dof_pos_target.tile(1, 3),
+            reset_mask,
+        )
         self._update_phase_observation()
 
     def _post_physics_step(self):
@@ -154,7 +177,8 @@ class Go2Trot(LeggedRobot):
     def _foot_contact_strength(self):
         """Map upward foot load smoothly from zero to nominal body-weight."""
         load = torch.clamp(
-            self.contact_forces[:, self.feet_indices, 2] / self._body_weight,
+            self.contact_forces[:, self.feet_indices, 2]
+            / (9.81 * self._backend.link_mass.sum(dim=1, keepdim=True)),
             min=0.0,
             max=1.0,
         )

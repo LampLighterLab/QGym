@@ -2,7 +2,8 @@ import numpy as np
 import torch
 
 from gym.envs.base.base_task import BaseTask
-from gym.utils import random_sample
+from gym.envs.base.domain_randomization import DomainRandomizer
+from gym.utils import masked_update, random_sample
 from gym.utils.sampling import torch_rand_float
 from gym.utils.helpers import class_to_dict
 from gym.utils.torch_quat import (
@@ -20,6 +21,14 @@ class LeggedRobot(BaseTask):
 
         super().__init__(backend, cfg, device, headless)
         self._parse_cfg(self.cfg)
+        # Compile and validate the DR contract before backend setup.  This is
+        # especially important for VSim, whose process-wide singleton should
+        # not be created for an invalid configuration.
+        self.domain_randomizer = DomainRandomizer(
+            self.cfg,
+            self._backend,
+            self.device,
+        )
         reset_mode = self.cfg.init_state.reset_mode
         self._reset_state = getattr(self, reset_mode, None)
         if not callable(self._reset_state):
@@ -30,6 +39,10 @@ class LeggedRobot(BaseTask):
 
         self._initialize_sim()
         self._init_buffers()
+        self.domain_randomizer.bind_link_masses()
+        self.domain_randomizer.randomize_startup(
+            torch.arange(self.num_envs, device=self.device)
+        )
         self.init_done = True
         self.reset()
 
@@ -47,9 +60,6 @@ class LeggedRobot(BaseTask):
 
         self._post_decimation_step()
         self._check_terminations_and_timeouts()
-
-        env_ids = self.to_be_reset.nonzero(as_tuple=False).flatten()
-        self._reset_idx(env_ids)
 
     def _pre_decimation_step(self):
         return None
@@ -87,37 +97,57 @@ class LeggedRobot(BaseTask):
             self.base_quat, self.gravity_vec
         )
 
-        self.base_height = self.root_states[:, 2:3]
-
         self.dof_pos_obs = self.dof_pos - self.default_dof_pos
 
         self.dof_pos_history = self.dof_pos_history.roll(self.num_actuators)
         self.dof_pos_history[:, : self.num_actuators] = self.dof_pos_target
 
-        env_ids = (
+        command_mask = (
             self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt)
             == 0
         )
-        self._resample_commands(env_ids.nonzero(as_tuple=False).flatten())
+        self._resample_commands(command_mask)
         if self.cfg.push_robots.toggle:
             if self.common_step_counter % self.cfg.push_interval == 0:
                 self._push_robots()
 
-    def _reset_idx(self, env_ids):
-        if len(env_ids) == 0:
-            return
-
+    def _reset_idx(self, reset_mask):
         # * reset robot states
-        self._reset_system(env_ids)
-        self._resample_commands(env_ids)
+        self._reset_system(reset_mask)
+        self._refresh_base_observations(reset_mask)
+        self._resample_commands(reset_mask)
         # * reset buffers
-        self.dof_pos_obs[env_ids] = self.dof_pos[env_ids] - self.default_dof_pos
-        self.dof_pos_target[env_ids] = self.default_dof_pos
-        self.dof_pos_history[env_ids] = self.dof_pos_target[env_ids].tile(3)
-        self.episode_length_buf[env_ids] = 0
+        masked_update(
+            self.dof_pos_obs,
+            self.dof_pos - self.default_dof_pos,
+            reset_mask,
+        )
+        masked_update(self.dof_pos_target, self.default_dof_pos, reset_mask)
+        masked_update(
+            self.dof_pos_history,
+            self.dof_pos_target.tile(1, 3),
+            reset_mask,
+        )
+        self.episode_length_buf.masked_fill_(reset_mask, 0)
+
+    def _refresh_base_observations(self, reset_mask):
+        masked_update(
+            self.base_lin_vel,
+            quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10]),
+            reset_mask,
+        )
+        masked_update(
+            self.base_ang_vel,
+            quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13]),
+            reset_mask,
+        )
+        masked_update(
+            self.projected_gravity,
+            quat_rotate_inverse(self.base_quat, self.gravity_vec),
+            reset_mask,
+        )
 
     def _initialize_sim(self):
-        """Delegate flat-world construction to the selected backend."""
         self.up_axis_idx = 2
         mesh_type = self.cfg.terrain.mesh_type
         if mesh_type not in (None, "plane"):
@@ -160,52 +190,39 @@ class LeggedRobot(BaseTask):
                 f"{self.actuated_dof_names}"
             )
 
-    def _resample_commands(self, env_ids):
-        """Randommly select commands of some environments
-
-        Args:
-            env_ids (List[int]):
-            Environments ids for which new commands are needed
-        """
-        self.commands[env_ids, 0] = torch_rand_float(
+    def _resample_commands(self, command_mask):
+        """Randomly sample commands for selected environments."""
+        candidate = torch.empty_like(self.commands)
+        candidate[:, 0] = torch_rand_float(
             self.command_ranges["lin_vel_x"][0],
             self.command_ranges["lin_vel_x"][1],
-            (len(env_ids), 1),
+            (self.num_envs, 1),
             device=self.device,
         ).squeeze(1)
-        self.commands[env_ids, 1] = torch_rand_float(
+        candidate[:, 1] = torch_rand_float(
             -self.command_ranges["lin_vel_y"],
             self.command_ranges["lin_vel_y"],
-            (len(env_ids), 1),
+            (self.num_envs, 1),
             device=self.device,
         ).squeeze(1)
         max_yaw_vel = self.command_ranges["yaw_vel"]
-        self.commands[env_ids, 2] = torch_rand_float(
-            -max_yaw_vel, max_yaw_vel, (len(env_ids), 1), device=self.device
+        candidate[:, 2] = torch_rand_float(
+            -max_yaw_vel,
+            max_yaw_vel,
+            (self.num_envs, 1),
+            device=self.device,
         ).squeeze(1)
 
         # set small commands to zero
-        self.commands[env_ids, :2] *= (
-            torch.norm(self.commands[env_ids, :2], dim=1) > 0.2
-        ).unsqueeze(1)
+        small_commands = torch.norm(candidate[:, :2], dim=1) <= 0.2
+        candidate[:, :2].masked_fill_(small_commands.unsqueeze(1), 0.0)
+        masked_update(self.commands, candidate, command_mask)
 
     def _set_camera(self, position, lookat):
         """Set camera position and direction"""
         self._backend.set_camera(position, lookat)
 
     def _process_dof_props(self, props, env_id):
-        """Callback allowing to store/change/randomize the DOF properties of
-            each environment. Called During environment creation.
-            Base behavior: stores position, velocity and torques limits
-                defined in the URDF
-
-        Args:
-            props (numpy.array): Properties of each DOF of the asset
-            env_id (int): Environment id
-
-        Returns:
-            [numpy.array]: Modified DOF properties
-        """
         if env_id == 0:
             self.dof_pos_limits = torch.zeros(
                 self.num_dof, 2, dtype=torch.float, device=self.device
@@ -252,62 +269,63 @@ class LeggedRobot(BaseTask):
         )
         return torques.view(self.torques.shape)
 
-    def _reset_system(self, env_ids):
-        """Resets selected environmments
-        Args:
-            env_ids (List[int]): Environemnt ids
-        """
-        self._reset_state(env_ids)
+    def _reset_system(self, reset_mask):
+        """Reset selected environments."""
+        self.domain_randomizer.randomize_episode(reset_mask)
+        self._reset_state(reset_mask)
 
         # * start base position shifted in X-Y plane
+        root_position = self.root_states[:, :3] + self.env_origins
         if self.custom_origins:
-            self.root_states[env_ids, :3] += self.env_origins[env_ids]
-            self.root_states[env_ids, :2] += torch_rand_float(
-                -1.0, 1.0, (len(env_ids), 2), device=self.device
+            root_position[:, :2] += torch_rand_float(
+                -1.0,
+                1.0,
+                (self.num_envs, 2),
+                device=self.device,
             )
-        else:
-            self.root_states[env_ids, :3] += self.env_origins[env_ids]
+        masked_update(self.root_states[:, :3], root_position, reset_mask)
 
-        self._backend.reset_dof_state(env_ids)
-        self._backend.reset_root_state(env_ids)
+        self._backend.reset_state(reset_mask)
 
     # * implement reset methods
-    def reset_to_basic(self, env_ids):
+    def reset_to_basic(self, reset_mask):
         """
         Reset to a single initial state
         """
-        self.dof_pos[env_ids] = self.default_dof_pos
-        self.dof_vel[env_ids] = 0
-        self.root_states[env_ids] = self.base_init_state
+        masked_update(self.dof_pos, self.default_dof_pos, reset_mask)
+        self.dof_vel.masked_fill_(reset_mask.unsqueeze(1), 0.0)
+        masked_update(self.root_states, self.base_init_state, reset_mask)
 
-    def reset_to_range(self, env_ids):
+    def reset_to_range(self, reset_mask):
         """
         Reset to a uniformly random distribution of states, sampled from a
         range for each state
         """
         # * dof states
-        self.dof_pos[env_ids] = random_sample(
-            env_ids,
+        dof_pos = random_sample(
+            self.num_envs,
             self.dof_pos_range[:, 0],
             self.dof_pos_range[:, 1],
             device=self.device,
         )
-        self.dof_vel[env_ids] = random_sample(
-            env_ids,
+        dof_vel = random_sample(
+            self.num_envs,
             self.dof_vel_range[:, 0],
             self.dof_vel_range[:, 1],
             device=self.device,
         )
+        masked_update(self.dof_pos, dof_pos, reset_mask)
+        masked_update(self.dof_vel, dof_vel, reset_mask)
 
         # * base states
         random_com_pos = random_sample(
-            env_ids,
+            self.num_envs,
             self.root_pos_range[:, 0],
             self.root_pos_range[:, 1],
             device=self.device,
         )
 
-        self.root_states[env_ids, 0:7] = torch.cat(
+        root_pose = torch.cat(
             (
                 random_com_pos[:, 0:3],
                 quat_from_euler_xyz(
@@ -318,12 +336,14 @@ class LeggedRobot(BaseTask):
             ),
             1,
         )
-        self.root_states[env_ids, 7:13] = random_sample(
-            env_ids,
+        root_velocity = random_sample(
+            self.num_envs,
             self.root_vel_range[:, 0],
             self.root_vel_range[:, 1],
             device=self.device,
         )
+        masked_update(self.root_states[:, 0:7], root_pose, reset_mask)
+        masked_update(self.root_states[:, 7:13], root_velocity, reset_mask)
 
     def _push_robots(self):
         """Random pushes the robots. Emulates an impulse by setting a
@@ -420,9 +440,7 @@ class LeggedRobot(BaseTask):
         )
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
         self.dof_pos_obs = torch.zeros_like(self.dof_pos)
-        self.base_height = torch.zeros(
-            self.num_envs, 1, dtype=torch.float, device=self.device
-        )
+        self.base_height = self.root_states[:, 2:3]
 
         # Joint position offsets in canonical full-DOF order.
         self.default_dof_pos = torch.zeros(
@@ -459,6 +477,12 @@ class LeggedRobot(BaseTask):
             gain_name = matching_gains[0]
             self.p_gains[:, actuator_index] = self.cfg.control.stiffness[gain_name]
             self.d_gains[:, actuator_index] = self.cfg.control.damping[gain_name]
+        self.domain_randomizer.bind_episode_targets(
+            {
+                "p_gains": self.p_gains,
+                "d_gains": self.d_gains,
+            }
+        )
         self.actuated_torque_limits = self.torque_limits.index_select(
             0, self.actuated_dof_indices
         )

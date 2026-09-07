@@ -15,7 +15,7 @@ from gym.utils.logging_and_saving import local_code_save_helper
 from gym.utils.logging_and_saving import wandb_singleton
 
 
-def get_train_args(argv=None):
+def make_train_parser():
     parser = argparse.ArgumentParser(description="Train a Q2 task")
     parser.add_argument(
         "--task", type=str, required=True, help="Task name (e.g. pendulum)"
@@ -36,6 +36,12 @@ def get_train_args(argv=None):
     )
     parser.add_argument(
         "--max_iterations", type=int, default=None, help="Override max_iterations"
+    )
+    parser.add_argument(
+        "--save_interval",
+        type=int,
+        default=None,
+        help="Override checkpoint interval in learning iterations",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument(
@@ -74,27 +80,41 @@ def get_train_args(argv=None):
     parser.add_argument("--disable_wandb", action="store_true", default=False)
     parser.add_argument("--wandb_project", type=str, default=None)
     parser.add_argument("--wandb_entity", type=str, default=None)
-    return parser.parse_args(argv)
+    return parser
 
 
-def setup():
-    args = get_train_args()
+def get_train_args(argv=None):
+    return make_train_parser().parse_args(argv)
+
+
+def setup(args=None, env_cfg=None, train_cfg=None):
+    if args is None:
+        args = get_train_args()
+    if (env_cfg is None) != (train_cfg is None):
+        raise ValueError("env_cfg and train_cfg must be supplied together")
 
     # Register tasks (imports the task classes)
     import gym.envs  # noqa: F401 — triggers task registration
 
-    env_cfg, train_cfg = task_registry.get_cfgs(
-        args.task,
-        original_cfg=args.original_cfg,
-        experiment_name=args.experiment_name,
-        load_run=args.load_run,
-    )
+    if env_cfg is None:
+        env_cfg, train_cfg = task_registry.get_cfgs(
+            args.task,
+            original_cfg=args.original_cfg,
+            experiment_name=args.experiment_name,
+            load_run=args.load_run,
+        )
+    elif args.original_cfg:
+        raise ValueError("original_cfg cannot be combined with supplied configs")
 
     # Apply CLI overrides
     if args.num_envs is not None:
         env_cfg.env.num_envs = args.num_envs
     if args.max_iterations is not None:
         train_cfg.runner.max_iterations = args.max_iterations
+    if args.save_interval is not None:
+        if args.save_interval <= 0:
+            raise ValueError("--save_interval must be positive")
+        train_cfg.runner.save_interval = args.save_interval
     if args.batch_size is not None:
         train_cfg.algorithm.batch_size = args.batch_size
     if args.seed is not None:
@@ -142,10 +162,8 @@ def setup():
 
     local_code_save_helper.save_local_files_to_logs(
         train_cfg.log_dir,
-        original_cfg_source_dir=getattr(
-            train_cfg,
-            "_original_cfg_source_dir",
-            None,
+        original_cfg_source_dir=(
+            train_cfg._original_cfg_source_dir if args.original_cfg else None
         ),
     )
 

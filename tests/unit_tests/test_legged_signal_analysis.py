@@ -68,6 +68,27 @@ def test_touchdown_rpd_and_grf_identify_balanced_trot():
     assert artifacts["gait_class"][0] == "trot"
 
 
+def test_grf_normalization_accepts_per_environment_mass():
+    masses = np.asarray([8.0, 16.0])
+    force = np.empty((4, 2, 4), dtype=np.float32)
+    force[:, 0] = masses[0] * 9.81 / 4.0
+    force[:, 1] = masses[1] * 9.81 / 4.0
+
+    metrics, _ = analyze_gait_and_grf(
+        force,
+        force,
+        np.ones((4, 2), dtype=bool),
+        moving=np.zeros(2, dtype=bool),
+        sample_rate_hz=100.0,
+        settle_steps=0,
+        contact_threshold_n=20.0,
+        gait_frequency_hz=2.5,
+        robot_mass_kg=masses,
+    )
+
+    np.testing.assert_allclose(metrics["grf_total_body_weight"], 1.0)
+
+
 def test_clearance_is_measured_relative_to_each_foot_stance_height():
     num_steps = 8
     phase = np.linspace(0.0, 2.0 * np.pi, num_steps, endpoint=False)

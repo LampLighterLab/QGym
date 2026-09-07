@@ -93,9 +93,9 @@ specification.
 - `dof_state` is `[num_envs * num_dof, 2]`; `dof_pos` and `dof_vel` are live,
   writable views into persistent public state. An engine may use private native
   buffers, but it must gather/scatter through persistent canonical buffers.
-- Resets use write-then-commit semantics. Task code writes public state, then
-  calls `reset_dof_state()` and `reset_root_state()`. Preserve pending root
-  writes when a DOF reset occurs first.
+- Resets use one atomic write-then-commit operation. Task code writes public
+  DOF and root state, then calls `reset_state(reset_mask)` once. Each backend
+  commits the complete selected state and performs one native forward/refresh.
 - The task-facing quaternion convention is scalar-last `[x, y, z, w]`.
   Engine-specific ordering conversions belong only at the backend boundary.
 - Public DOFs, bodies, actions, contacts, and state tensors use
@@ -155,6 +155,7 @@ match the local module while improving touched code deliberately.
   `try/except`, default-valued config reads that mask a missing required field,
   or automatic backend substitution. Optional dependency boundaries and
   cleanup that preserves the original exception are legitimate exceptions.
+- Prefer querying attributes directly instead of using `getattr()`, e.g. `getattr(cfg, "seed", None)` should be `cfg.seed`, and it should be allowed to fail: if there is supposed to be a default value, it should be set in the inherited default config. Other than that, the user should be forced to be responsible for setting things. This forces the user to be more aware of the implementation.
 - Preserve established public names, including historical capitalization such
   as `MuJocoCPUBackend`, unless the task is an explicit API migration.
 - Avoid wildcard imports and `eval` in new code even where legacy code uses

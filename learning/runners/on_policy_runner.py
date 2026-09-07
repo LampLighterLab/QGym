@@ -96,11 +96,8 @@ class OnPolicyRunner(BaseRunner):
                         self.env.step()
                         # put reward integration here
                         self.update_rewards_dict(rewards_dict, step)
-                    else:
-                        # catch and reset failed envs
-                        to_be_reset = self.env.timed_out | self.env.terminated
-                        env_ids = (to_be_reset).nonzero(as_tuple=False).flatten()
-                        self.env._reset_idx(env_ids)
+
+                    self.reset_envs()
 
                     total_rewards = torch.stack(
                         tuple(rewards_dict.sum(dim=0).values())
@@ -223,6 +220,7 @@ class OnPolicyRunner(BaseRunner):
     def save(self):
         os.makedirs(self.log_dir, exist_ok=True)
         path = os.path.join(self.log_dir, "model_{}.pt".format(self.it))
+        temporary = path + ".tmp"
         torch.save(
             {
                 "actor_state_dict": self.alg.actor.state_dict(),
@@ -231,11 +229,12 @@ class OnPolicyRunner(BaseRunner):
                 "critic_optimizer_state_dict": self.alg.critic_optimizer.state_dict(),
                 "iter": self.it,
             },
-            path,
+            temporary,
         )
+        os.replace(temporary, path)
 
     def load(self, path, load_optimizer=True):
-        loaded_dict = torch.load(path, weights_only=True)
+        loaded_dict = torch.load(path, weights_only=True, map_location=self.device)
         self.alg.actor.load_state_dict(loaded_dict["actor_state_dict"])
         self.alg.critic.load_state_dict(loaded_dict["critic_state_dict"])
         if load_optimizer:
