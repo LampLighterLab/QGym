@@ -16,6 +16,9 @@ class Go2Trot(LeggedRobot):
     def _init_buffers(self):
         super()._init_buffers()
 
+        self._actuated_dof_pos_limits = self.dof_pos_limits.index_select(
+            0, self.actuated_dof_indices
+        )
         self.phase = torch.zeros(
             self.num_envs, 1, dtype=torch.float, device=self.device
         )
@@ -72,6 +75,16 @@ class Go2Trot(LeggedRobot):
 
     def _pre_decimation_step(self):
         self._update_gait_reference()
+        reference = self.gait_reference + self.default_dof_pos.index_select(
+            1, self.actuated_dof_indices
+        )
+        # Bound the full PD position command. Keep the applied residual in the
+        # task buffer so observations and action-history rewards describe it;
+        # the runner retains its separate raw samples for PPO likelihoods.
+        self.dof_pos_target.clamp_(
+            min=self._actuated_dof_pos_limits[:, 0] - reference,
+            max=self._actuated_dof_pos_limits[:, 1] - reference,
+        )
 
     def _compute_torques(self):
         pos = self.dof_pos.index_select(1, self.actuated_dof_indices)

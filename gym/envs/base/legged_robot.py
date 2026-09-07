@@ -97,8 +97,6 @@ class LeggedRobot(BaseTask):
             self.base_quat, self.gravity_vec
         )
 
-        self.base_height = self.root_states[:, 2:3]
-
         self.dof_pos_obs = self.dof_pos - self.default_dof_pos
 
         self.dof_pos_history = self.dof_pos_history.roll(self.num_actuators)
@@ -116,6 +114,24 @@ class LeggedRobot(BaseTask):
     def _reset_idx(self, reset_mask):
         # * reset robot states
         self._reset_system(reset_mask)
+        # The runner reads observations immediately after reset, before any
+        # physics step. Root views are already current; refresh the selected
+        # derived quantities in place so no terminal motion leaks into them.
+        masked_update(
+            self.base_lin_vel,
+            quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10]),
+            reset_mask,
+        )
+        masked_update(
+            self.base_ang_vel,
+            quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13]),
+            reset_mask,
+        )
+        masked_update(
+            self.projected_gravity,
+            quat_rotate_inverse(self.base_quat, self.gravity_vec),
+            reset_mask,
+        )
         self._resample_commands(reset_mask)
         # * reset buffers
         masked_update(
@@ -437,9 +453,7 @@ class LeggedRobot(BaseTask):
         )
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
         self.dof_pos_obs = torch.zeros_like(self.dof_pos)
-        self.base_height = torch.zeros(
-            self.num_envs, 1, dtype=torch.float, device=self.device
-        )
+        self.base_height = self.root_states[:, 2:3]
 
         # Joint position offsets in canonical full-DOF order.
         self.default_dof_pos = torch.zeros(
