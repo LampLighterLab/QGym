@@ -15,9 +15,12 @@ projectiles are outside the current scope.
 Domain randomization implements startup contact friction and link mass/inertia,
 plus episode-level PD-gain scaling on MuJoCo CPU, MuJoCo Warp, and VSim.
 `DR.md` defines the semantics, evidence, and remaining progression. The angular-
-velocity contract and CPU reset-state caches are corrected. The next priority
-is a reduced 100 Hz baseline/DR pilot; historical throughput results alone do
-not establish robustness or transfer.
+velocity contract and CPU reset-state caches are corrected. The reduced 100 Hz
+pilot completed its four GPU training cells, but CPU nominal training diverged
+before iteration 500. A fixed-policy CPU probe isolated runaway previous-target
+feedback; Go2Trot now bounds full position commands to joint limits. Task reset
+observations are also refreshed immediately. Validate fresh CPU training and
+the remaining transfer failures before expanding the campaign.
 A deterministic MuJoCo 3.11 crash on a valid fallen Go2 pose was isolated to
 general convex multi-contact CCD; Go2 disables that path and retains primitive
 multi-point contacts, with the captured pose covered by a subprocess
@@ -35,7 +38,7 @@ regression. Do not reintroduce legacy engine-specific callbacks.
 2. **Complete:** close the separate MuJoCo CPU reset-liveness gap. Setup and
    root/reset commits publish current DOF, root, body, and contact state. Sparse
    resets forward/refresh only selected environments; empty masks do no work.
-3. **Running:** retrain nominal CPU/Warp/VSim baselines from scratch and evaluate
+3. **Incomplete:** retrain nominal CPU/Warp/VSim baselines from scratch and evaluate
    their cross-backend transfer with fixed standing, translation, yaw, and combined
    commands. Report per-command survival and tracking before attributing remaining
    transfer failure to contact physics or DR. An older VSim policy remains an
@@ -87,10 +90,175 @@ adds explicit training exclusions, speed-stage inclusion, and evaluation
 scheduling. Old campaigns remain historical; do not resume them across these
 corrections.
 
-The campaign started under `logs/baselines_100hz_20260906/`; its `manifest.json`
-and `summary.json` are the live status sources. The detached controller launch
-record and stdout are under `logs/baselines_100hz_20260906_control/`. CPU and
-Warp nominal runs were both observed advancing with finite optimizer metrics.
+The campaign stopped under `logs/baselines_100hz_20260906/`; its `manifest.json`
+and `summary.json` record four complete training cells, one failed training
+cell, 40 complete evaluations, and ten pending evaluations. Controller records
+are under `logs/baselines_100hz_20260906_control/`. Revalidation found all 44
+completed cells valid and execution sources unchanged from the frozen snapshot.
+
+### Reduced pilot results
+
+All four GPU runs completed 500 iterations with finite logged metrics. CPU
+nominal logged through iteration 444, then failed during the next PPO actor
+update with NaN distribution means. Instability was already visible at iteration
+242 (value loss 36.2), rising to 6.67e15 at 264 before recovering to 0.031 at
+300. A second wave reached infinity at 439 and NaN at 444. Action-rate penalties
+also exploded, but they average completed episodes, so their logged timing
+cannot establish which quantity diverged first. Checkpoint 400 has finite
+model/optimizer tensors; it does not certify the preceding training as healthy.
+There is no CPU checkpoint 500 or CPU-trained evaluation result in this pilot;
+its ten dependent cells remain pending. The subsequent investigation below
+isolates a sufficient failure mechanism without recovering the exact first
+trigger of the original run. Keep the failed run visible.
+
+Final-checkpoint survival below is **nominal / combined-in-range**, in percent.
+Each cell uses 200 environments, ten commands with twenty trials each, and a
+five-second horizon at 100 Hz.
+
+| Training | CPU evaluation | Warp evaluation | VSim evaluation |
+| --- | ---: | ---: | ---: |
+| Warp, DR off | 97.5 / 99.5 | 97 / 100 | 94.5 / 95.5 |
+| Warp, full DR | 100 / 100 | 100 / 100 | 100 / 100 |
+| VSim, DR off | 100 / 94 | 87.5 / 93.5 | 100 / 99.5 |
+| VSim, full DR | 95 / 94 | 93.5 / 95 | 100 / 100 |
+
+Warp DR removes every observed final-checkpoint failure, including sideways-
+right failures in the nominal policy. Native forward tracking RMSE worsens
+from 0.246 to 0.354 m/s nominal and 0.211 to 0.345 m/s under combined variation.
+The DR policy is still improving between checkpoints 250 and 500, so these
+results compare a fixed training budget, not converged policies.
+
+VSim DR improves native forward tracking RMSE from 0.358 to 0.318 m/s nominal
+and 0.368 to 0.318 m/s under combined variation. It resolves the nominal
+policy's backward failure on Warp (1/20 to 20/20 survival), but fast-forward
+survival remains only 10/20 on CPU and 7/20 on Warp in the nominal domain.
+The corresponding DR-off policy survives fast-forward in 20/20 CPU and 14/20
+Warp trials. This is a transfer tradeoff, not uniform robustness improvement.
+
+Tracking metrics exclude the first 0.5 seconds and samples after termination;
+interpret them alongside survival. This single-seed, short-horizon, in-range
+pilot does not establish a general winner. Next priorities are CPU numerical
+stability, controlled CPU/Warp fast-forward and backward trajectory comparison,
+then additional paired GPU seeds and targeted stress tests if those checks are
+coherent. CPU full-DR training remains excluded.
+
+### CPU instability investigation and command correction
+
+Artifacts are under `logs/cpu_instability_20260907/`. A fixed checkpoint-250
+policy reproduces runaway targets on actual CPU physics without any optimizer
+updates: 256 environments, 500 control/physics steps at 100 Hz, fixed seed and
+initialization. Deterministic raw actions reach 2.47e7, residual targets 2.08e7
+radians, unweighted action-rate penalties 5.41e11, and critic predictions
+7.27e4. Applied torques remain capped at 45.43 Nm, recorded physical state stays
+finite, and native MuJoCo warning counts remain zero.
+
+Holding physical observations fixed and advancing only previous-target/history
+feedback also reproduces growth with checkpoint 250. That probe produces GAE
+returns of 8.86e12 and mean squared value error of 4.02e23 with both networks
+unchanged. Checkpoints 200 and 400 stay bounded in the same frozen-observation
+probe. A separately reinitialized checkpoint-400 continuation completes 50
+updates with maximum mean value loss 0.0414. It is not an exact simulator/RNG
+resume and does not certify the failed campaign as healthy.
+
+The task reset path had a separate defect: immediately after resetting a fallen
+robot, actor/critic inputs could retain its old local base velocities and
+projected gravity. Those selected derived caches now refresh from the committed
+root state, and base height is a persistent root-state view. This correction
+changes rollout trajectories but does not remove the checkpoint-250 runaway.
+
+Go2Trot now constrains the **full** desired joint position (default offset plus
+gait reference plus policy residual) to canonical actuator joint limits before
+PD control. The applied residual stays in `dof_pos_target` and history, keeping
+observations and rewards consistent with the controller. PPO retains the raw
+sampled action for likelihood calculation. This uses the robot's existing
+limits; there is no reward, optimizer, or normalization tuning.
+
+The same fixed-policy experiment with that boundary reduces deterministic peak
+actions from 2.47e7 to 9.06, peak action-rate penalty from 5.41e11 to 2.59, and
+peak critic value from 7.27e4 to 7.03. Stochastic/noisy peak actions fall from
+228.65 to 11.39. Full commanded-position violations are at most 2.4e-7 radians
+(float32 roundoff). This isolates the stabilizing intervention, but the old
+policy's termination count increases: deterministic 23 to 32 and stochastic
+12 to 37. Retraining and evaluation are required; numerical stability is not
+evidence of improved gait quality.
+
+Regression tests cover immediate reset actor/critic observations, selective and
+empty resets, legal commands, both joint limits with nonzero phase/default
+offsets, passive/permuted DOF routing, raw PPO sample preservation, and finite
+applied histories/rewards under huge finite samples. Removing the reset fix
+fails two CPU cases; removing the command projection fails three boundary
+cases. VSim native-root preservation allows only 2e-7 quaternion refresh
+roundoff; derived caches and actor/critic observation preservation remain exact.
+
+The original campaign remains a record of the earlier command semantics.
+Further CPU collection uses a fresh seed-7, 500-iteration run with the original
+4096-environment/16-step rollout geometry and 100 Hz physics/control. Diagnostic
+instrumentation records per-field inputs, rewards, values/returns, native warning
+counts, and gradient norms; it captures the first large value-loss update and
+stops on nonfinite gradients/losses or an update exception. Do not merge those
+results into the original frozen manifest.
+
+The fresh CPU run launched at `2026-09-07T04:17:14Z` under
+`logs/cpu_instability_20260907/fresh_cpu500/`. Training status and per-update
+diagnostics are in that directory; controller status and its ten-cell evaluation
+plan are under `fresh_cpu500_control/`. After successful training, checkpoints
+100/250 receive native CPU nominal/combined-in-range evaluation, and checkpoint
+500 receives both domains on CPU/Warp/VSim. Execution-source changes block
+evaluation, and the controller checks artifact shape, frequency, balanced
+commands, finite core traces, and checkpoint identity before marking a result
+complete. Training and all ten evaluations completed by
+`2026-09-07T05:36:47Z`. All 500 recorded updates have finite inputs, physical
+state, losses, and gradients, with zero native warning counts. Maximum mean
+value loss is 0.266 and the final value is 0.0355. All 105 recorded execution
+source hashes and all ten evaluation checkpoint hashes were revalidated.
+
+Final survival is 100% nominal/combined on CPU and Warp, and 98.5%/99% on
+VSim. Nominal forward tracking RMSE is 0.151/0.156/0.332 m/s on CPU/Warp/VSim;
+yaw RMSE is 0.480/0.479/0.510 rad/s. Thus stability and forward transfer are
+strong, while yaw tracking and VSim fast-forward accuracy still need work.
+Earlier GPU policies used different command semantics, so these are not yet
+matched-policy-training comparisons across the corrected task.
+
+### Backend specificity and cost of the corrections
+
+The unstable CPU-trained checkpoint 250 also runs away on CUDA with the same
+recorded observations and precomputed stochastic noise. Deterministic CPU/CUDA
+actions exceed 100 at the same step 75 and reach approximately 8.27e8 after
+500 steps. Stochastic thresholds also agree. Final action differences are only
+about 2.9e-6 of peak amplitude. All eight Warp/VSim checkpoints at iterations
+250/500 remain bounded on the same CPU replay. The instability follows the
+learned weights; CPU arithmetic is not required for this failure mechanism.
+
+An initialization confound is confirmed: all four original GPU runs have
+identical initial actor weights, but the seed-7 CPU actor differs. The trainer
+constructs the environment before the network. CPU task initialization consumes
+the CPU RNG subsequently used by `nn.Linear`, while GPU task sampling uses the
+CUDA RNG. Future cross-device comparisons should explicitly match initial model
+state or separate learner initialization from task RNG. Which training
+difference first triggered the original unstable policy remains unresolved.
+
+At 4096 environments and 100 Hz, isolated added command-projection work costs
+approximately 30 microseconds on CPU and 16-17 microseconds on CUDA. Added
+reset-derived-state refresh costs 239 microseconds on CPU and 138-143
+microseconds on CUDA. Relative to current open-loop task steps with eight
+selected resets per step, their summed cost corresponds to roughly 0.09% CPU,
+0.8% Warp, and 3.3% VSim. These percentages indicate scale, not a paired
+end-to-end regression measurement. The fixes do not change native physics
+settings, solver work, or environment-set topology.
+
+Actual CPU training collection medians over iterations 100-400 are 4.406 seconds
+before and 4.420 seconds after (+0.33%); whole iteration medians are 9.693 and
+9.342 seconds. Different trajectories and added diagnostics prevent attributing
+those differences solely to the patch. Detailed timings and replay evidence are
+in `logs/cpu_instability_20260907/timing_and_backend_specificity.json`.
+
+The final correctness gate passes 265 portable tests, 38 colocated tests, all
+31 Warp tests, and 18 focused licensed VSim tests. Ruff and the package build
+pass. A two-update CPU smoke uses the production 4096-environment/16-step
+geometry and completes with finite losses/gradients and no native warnings.
+An end-to-end evaluation regression verifies that raw samples and pre-step
+observations retain their timing while recorded applied commands reflect the
+post-projection task values. Logs are in the investigation directory.
 
 ### CPU reset-state cache correction
 

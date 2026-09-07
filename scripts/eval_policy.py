@@ -727,16 +727,6 @@ def main():
                 actions,
                 runner.actor_cfg["disable_actions"],
             )
-            if applied_actions is not None:
-                applied_actions[k] = (
-                    torch.cat(
-                        [getattr(env, name) for name in runner.actor_cfg["actions"]],
-                        dim=-1,
-                    )
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
             impulse_envs = np.flatnonzero(impulse_steps == k)
             if len(impulse_envs):
                 impulse_envs_device = torch.as_tensor(
@@ -780,6 +770,16 @@ def main():
             else:
                 upright[k] = env.projected_gravity[:, 2].detach().cpu().numpy()
             env.step()
+            if applied_actions is not None:
+                applied_actions[k] = (
+                    torch.cat(
+                        [getattr(env, name) for name in runner.actor_cfg["actions"]],
+                        dim=-1,
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
             term = env.terminated
             if legged_accumulator is not None:
                 legged_accumulator.update(k, alive_before_step & ~term)

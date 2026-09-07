@@ -248,6 +248,13 @@ Google DeepMind MJX package). Use `--backend mujoco` for MuJoCo CPU, or launch
 with `uv run --env-file .env.vsim ... --backend vsim` for VSim on `cuda:0`.
 The GPU default requires the `gpu` extra described above.
 
+Go2Trot bounds each full desired joint position (default offset, gait reference,
+and policy residual) to the robot's joint limits before PD control. Observations
+and action-history rewards use the applied residual; PPO keeps the separate raw
+policy sample. Evaluation artifacts record raw outputs before the step and
+applied commands after this projection. Policies trained before this boundary
+was introduced need reevaluation or retraining under the current control path.
+
 The default protocol evaluates 200 randomized initial states, balanced across
 ten fixed stand, walk, strafe, turn, and combined-command cases. It records
 command tracking, survival, base stability, gait timing, phase-binned foot
