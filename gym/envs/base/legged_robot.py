@@ -114,24 +114,7 @@ class LeggedRobot(BaseTask):
     def _reset_idx(self, reset_mask):
         # * reset robot states
         self._reset_system(reset_mask)
-        # The runner reads observations immediately after reset, before any
-        # physics step. Root views are already current; refresh the selected
-        # derived quantities in place so no terminal motion leaks into them.
-        masked_update(
-            self.base_lin_vel,
-            quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10]),
-            reset_mask,
-        )
-        masked_update(
-            self.base_ang_vel,
-            quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13]),
-            reset_mask,
-        )
-        masked_update(
-            self.projected_gravity,
-            quat_rotate_inverse(self.base_quat, self.gravity_vec),
-            reset_mask,
-        )
+        self._refresh_base_observations(reset_mask)
         self._resample_commands(reset_mask)
         # * reset buffers
         masked_update(
@@ -147,8 +130,24 @@ class LeggedRobot(BaseTask):
         )
         self.episode_length_buf.masked_fill_(reset_mask, 0)
 
+    def _refresh_base_observations(self, reset_mask):
+        masked_update(
+            self.base_lin_vel,
+            quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10]),
+            reset_mask,
+        )
+        masked_update(
+            self.base_ang_vel,
+            quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13]),
+            reset_mask,
+        )
+        masked_update(
+            self.projected_gravity,
+            quat_rotate_inverse(self.base_quat, self.gravity_vec),
+            reset_mask,
+        )
+
     def _initialize_sim(self):
-        """Delegate flat-world construction to the selected backend."""
         self.up_axis_idx = 2
         mesh_type = self.cfg.terrain.mesh_type
         if mesh_type not in (None, "plane"):
@@ -224,18 +223,6 @@ class LeggedRobot(BaseTask):
         self._backend.set_camera(position, lookat)
 
     def _process_dof_props(self, props, env_id):
-        """Callback allowing to store/change/randomize the DOF properties of
-            each environment. Called During environment creation.
-            Base behavior: stores position, velocity and torques limits
-                defined in the URDF
-
-        Args:
-            props (numpy.array): Properties of each DOF of the asset
-            env_id (int): Environment id
-
-        Returns:
-            [numpy.array]: Modified DOF properties
-        """
         if env_id == 0:
             self.dof_pos_limits = torch.zeros(
                 self.num_dof, 2, dtype=torch.float, device=self.device
