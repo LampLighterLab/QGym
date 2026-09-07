@@ -96,9 +96,8 @@ class OnPolicyRunner(BaseRunner):
                         self.env.step()
                         # put reward integration here
                         self.update_rewards_dict(rewards_dict, step)
-                    else:
-                        # catch and reset failed envs
-                        self.reset_envs()
+
+                    self.reset_envs()
 
                     total_rewards = torch.stack(
                         tuple(rewards_dict.sum(dim=0).values())
