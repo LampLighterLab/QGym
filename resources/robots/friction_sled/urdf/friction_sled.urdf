@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<robot name="friction_sled">
+  <link name="base">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.010833" ixy="0" ixz="0"
+               iyy="0.016667" iyz="0" izz="0.020833"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <box size="0.4 0.3 0.2"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.4 0.3 0.2"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- A tiny articulated marker keeps this a one-DOF robot, which exercises
+       the same backend path as Q2 tasks without materially changing the sled. -->
+  <link name="marker">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="0.001"/>
+      <inertia ixx="0.000001" ixy="0" ixz="0"
+               iyy="0.000001" iyz="0" izz="0.000001"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.03"/>
+      <geometry>
+        <sphere radius="0.02"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="marker_joint" type="revolute">
+    <parent link="base"/>
+    <child link="marker"/>
+    <origin xyz="0 0 0.1"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.01" upper="0.01" effort="1.0" velocity="1.0"/>
+  </joint>
+</robot>
