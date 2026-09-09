@@ -68,17 +68,20 @@ def test_gravity_and_applied_torque_have_expected_signs(pendulum_backend):
     reset_mask = _reset_mask(backend, 4)
     zero_torques = torch.zeros(4, 1, device=backend.device)
 
-    backend.dof_pos[:] = torch.pi / 2
+    directions = torch.tensor([1.0, -1.0, 1.0, -1.0], device=backend.device)
+    # The pole points upward at q=0; gravity drives either horizontal pose
+    # toward the downward equilibrium at +pi or -pi, respectively.
+    backend.dof_pos[:] = directions[:, None] * torch.pi / 2
     backend.dof_vel.zero_()
     backend.reset_state(reset_mask)
     backend.step(zero_torques)
-    assert backend.dof_vel.abs().mean() > 1e-6
+    assert torch.all(backend.dof_vel[:, 0] * directions > 1e-6)
 
     backend.dof_pos.zero_()
     backend.dof_vel.zero_()
     backend.reset_state(reset_mask)
-    backend.step(torch.full((4, 1), 2.0, device=backend.device))
-    assert backend.dof_vel[:, 0].mean() > 0
+    backend.step(2.0 * directions[:, None])
+    assert torch.all(backend.dof_vel[:, 0] * directions > 0)
 
 
 def test_environments_evolve_independently(pendulum_backend_16):

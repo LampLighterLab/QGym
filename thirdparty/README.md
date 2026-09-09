@@ -6,7 +6,7 @@ subdirectory holds the machine-local pieces, all gitignored:
 
 - `vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl` — the selected engine wheel
   (from the vendor / the vlearn SDK repo). `[tool.uv.sources]` in
-  pyproject.toml points here; install with `uv sync --locked --extra vsim`.
+  pyproject.toml points here; install with `uv sync --frozen --extra vsim`.
   The CUDA 13.0 variant matches the locked Linux PyTorch build.
 - `License.key` — your node-locked license key (one line); found via
   `VL_LICENSE_KEY_PATH` (set in `.env.vsim`).
@@ -25,7 +25,7 @@ subdirectory holds the machine-local pieces, all gitignored:
 From the repository root:
 
 ```bash
-uv sync --locked --extra vsim
+uv sync --frozen --extra vsim
 ```
 
 Activate after the first install and whenever `License.key` is replaced or
@@ -53,6 +53,13 @@ bash scripts/run_vsim_tests.sh
 After the tests pass, run normal commands from the repository root:
 
 ```bash
-uv run --env-file .env.vsim scripts/train.py --task mini_cheetah \
+uv run --frozen --extra vsim --env-file .env.vsim scripts/train.py --task mini_cheetah \
     --backend vsim --device cuda:0 --num_envs 4096 --headless
 ```
+
+`--frozen` installs the selected locked dependencies without requiring the
+unrelated optional Unitree checkout. The Go2 hardware SDK has its own gitignored
+directory, `thirdparty/unitree_sdk2_python/`, populated by
+`uv run --frozen python scripts/fetch_unitree_sdk.py`. See
+[`README_DEPLOY.md`](../README_DEPLOY.md) for its native DDS prerequisite and
+editable installation.

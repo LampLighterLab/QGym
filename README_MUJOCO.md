@@ -42,14 +42,13 @@ uv venv --python 3.11
 uv sync --frozen
 ```
 
-Python 3.11 is used because the optional vsim wheel is built for CPython 3.11.
-MuJoCo-only development supports Python 3.11–3.13, but 3.11 is the common,
-tested setup.
+The package currently requires Python 3.11, matching the optional vsim wheel
+and the deployment environment.
 
 `--frozen` is intentional for a MuJoCo-only clone. The universal lockfile also
-records the optional, gitignored vsim wheel; asking uv to re-resolve or validate
-that local source fails until the licensed wheel has been supplied. Use
-`--frozen` with `uv sync` and `uv run` when vsim is not installed.
+records the optional, gitignored VSim wheel and Unitree SDK checkout; asking uv
+to re-resolve or validate local sources requires those files. Use `--frozen`
+with `uv sync` and `uv run` when optional sources are not installed.
 
 Verify the installation:
 
@@ -104,7 +103,7 @@ and `uv.lock`.
 Install the VSim extra from the repository root:
 
 ```bash
-uv sync --locked --extra vsim
+uv sync --frozen --extra vsim
 ```
 
 Activate the license after the first install. Repeat this step whenever you
@@ -134,11 +133,32 @@ After the tests pass, run VSim commands from the repository root with
 `.env.vsim`:
 
 ```bash
-uv run --env-file .env.vsim scripts/train.py --task mini_cheetah \
+uv run --frozen --extra vsim --env-file .env.vsim scripts/train.py --task mini_cheetah \
     --backend vsim --device cuda:0 --num_envs 4096 --headless
 ```
 
 Never commit the wheel, license files, or activation data.
+
+### Optional Unitree Go2 deployment setup
+
+Training and simulation do not require the Unitree SDK. On Linux, hardware
+deployment uses the `unitree_sdk` extra and a pinned editable checkout of the
+official SDK. The checkout preserves native CRC libraries missing from upstream
+wheels; its Python dependencies are locked normally.
+
+Fetch the SDK, then build native Cyclone DDS 0.10.2 and export
+`CYCLONEDDS_HOME` using [`README_DEPLOY.md`](README_DEPLOY.md):
+
+```bash
+uv run --frozen python scripts/fetch_unitree_sdk.py
+# Build Cyclone DDS and export CYCLONEDDS_HOME as described in README_DEPLOY.md.
+uv sync --frozen --extra unitree_sdk
+uv run --frozen --extra unitree_sdk python -m pytest -q -m unitree
+```
+
+The tests do not connect to a robot. Use `--extra unitree_sdk` on deployment
+commands as well; a default sync removes optional packages. `--frozen` also
+allows deployment-only machines to install without the local VSim wheel.
 
 ### Train
 
@@ -245,7 +265,7 @@ uv run --frozen scripts/eval_go2_policy.py \
 The evaluator defaults to `--backend mjx`, which is the public shorthand here
 for Q2's MuJoCo Warp backend on `cuda:0` (it does not invoke the separate
 Google DeepMind MJX package). Use `--backend mujoco` for MuJoCo CPU, or launch
-with `uv run --env-file .env.vsim ... --backend vsim` for VSim on `cuda:0`.
+with `uv run --frozen --extra vsim --env-file .env.vsim ... --backend vsim` for VSim on `cuda:0`.
 The GPU default requires the `gpu` extra described above.
 
 Go2Trot bounds each full desired joint position (default offset, gait reference,
@@ -318,6 +338,64 @@ normalization at 100 Hz:
 bash scripts/run_vsim_tests.sh -k vsim_domain_randomization_regression
 ```
 
+### Simulation and learning regression tools
+
+The [streamlining plan](STREAMLINING_PLAN.md) defines the calibration and
+acceptance protocol. The simulation worker fixes control and physics at 100 Hz,
+warms the selected path, restores state between batches, and saves timings and
+state evidence. Run each cell in a fresh process with no competing GPU jobs:
+
+```bash
+uv run --frozen -m scripts.benchmark_simulation run --backend warp \
+    --task go2trot --num-envs 4096 --profile task_timeout \
+    --output logs/streamlining/speed/warp.json
+uv run --frozen --env-file .env.vsim -m scripts.benchmark_simulation run \
+    --backend vsim --task go2trot --num-envs 4096 --sets 1 \
+    --profile task_timeout --output logs/streamlining/speed/vsim.json
+```
+
+Use `--sets 4096` for the nominal VSim topology discriminator. Other profiles
+include `backend_step`, `task_empty`, and `backend_reset_*` / `task_reset_*`
+with `empty`, `one`, `sparse`, or `all` masks. Calibrate batch length, then
+freeze it. The `compare` subcommand takes `--reference` and `--candidate`
+lists of at least five alternating fresh-process results, plus `--output`.
+Incompatible protocols and profiler timings are rejected; an inconclusive or
+failing comparison exits unsuccessfully.
+
+Capture Python/native host stacks and native CUDA work in separate runs:
+
+```bash
+uv sync --frozen --extra vsim --group profiling
+uv run --frozen --env-file .env.vsim -m scripts.profile_simulation \
+    --tool py-spy --backend vsim --profile task_timeout \
+    --output logs/streamlining/profiles/vsim_host
+uv run --frozen --env-file .env.vsim -m scripts.profile_simulation \
+    --tool nsys --backend vsim --profile task_timeout \
+    --output logs/streamlining/profiles/vsim_cuda
+```
+
+For Warp, use `--backend warp`; omit `--extra vsim` on installations without
+the licensed backend. Nsight Systems must be installed separately. Host
+capture needs permission to trace its child process. Open `host.flamegraph.svg`
+directly, or load `host.speedscope.json` in Speedscope; inspect `cuda.nsys-rep`
+in Nsight Systems. Setup and warmup are excluded from the filtered profiles.
+Host stack sample widths and summed GPU kernel times are different measurements.
+
+The pendulum worker uses the real PPO training entry point, evaluates fixed
+checkpoints on a native physical-state grid, records applied torques, and checks
+fresh-runner checkpoint restoration and one additional update:
+
+```bash
+uv run --frozen -m scripts.regression_pendulum_training --backend mujoco \
+    --device cuda:0 --output logs/streamlining/pendulum/warp_seed7
+uv run --frozen --env-file .env.vsim -m scripts.regression_pendulum_training \
+    --backend vsim --device cuda:0 --output logs/streamlining/pendulum/vsim_seed7
+```
+
+These commands calibrate the proposed learning targets; `--require-learning`
+makes the physical acceptance criteria blocking once the profile is frozen.
+All three frequencies are explicitly 100 Hz.
+
 ### Run a domain-randomization campaign
 
 For a reduced 100 Hz restart after the backend frame/reset corrections:
@@ -346,7 +424,7 @@ nominal, in-range, and stress domains. This is a multi-day run on the current
 workstation.
 
 ```bash
-uv run --env-file .env.vsim \
+uv run --frozen --extra vsim --env-file .env.vsim \
     scripts/run_full_domain_randomization_campaign.py \
     --output logs/dr_full_fresh
 ```
@@ -594,12 +672,12 @@ GPU training (`--device cuda:0`) is not available on macOS.
 
 **GUI viewer on macOS:** MuJoCo's passive viewer requires `mjpython` (bundled
 with the `mujoco` pip package) instead of the standard Python interpreter.
-`mjpython` needs to dlopen `libpython3.13.dylib`, which uv's bundled Python
-does not ship. The fix is to create the venv using Homebrew's Python instead:
+If `mjpython` cannot load the matching `libpython` dylib from uv's bundled
+interpreter, create the venv using Homebrew's Python 3.11 instead:
 
 ```bash
-brew install python@3.13   # if not already installed
-uv venv --python /opt/homebrew/opt/python@3.13/bin/python3.13
+brew install python@3.11   # if not already installed
+uv venv --python "$(brew --prefix python@3.11)/bin/python3.11"
 uv sync --frozen
 .venv/bin/mjpython scripts/train.py --task mini_cheetah --device cpu --num_envs 64
 ```

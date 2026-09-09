@@ -46,7 +46,6 @@ class Pendulum(FixedRobot):
         masked_update(self.dof_vel, grid[:, 1].unsqueeze(-1), reset_mask)
 
     def _reward_theta(self):
-        # 0 at UP (theta=0), 2 at DOWN (theta=pi); sqrdexp peaks at err=0
         theta_err = 1.0 - torch.cos(self.dof_pos[:, 0])
         return self._sqrdexp(theta_err)
 
@@ -55,13 +54,6 @@ class Pendulum(FixedRobot):
         return self._sqrdexp(omega_rwd)
 
     def _reward_equilibrium(self):
-        # theta_norm = self._normalize_theta()
-        # omega = self.dof_vel[:, 0]
-        # error = torch.stack(
-        #     [theta_norm / self.scales["dof_pos"], omega / self.scales["dof_vel"]],
-        # dim=1)
-        # return self._sqrdexp(torch.mean(error, dim=1), 0.01)
-
         # todo compare alternatives
         error = torch.abs(self.dof_state)
         error[:, 0] /= self.scales["dof_pos"]

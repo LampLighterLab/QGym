@@ -92,6 +92,9 @@ resources/robots/*/vsim/*.vsim
 resources/robots/*/vsim/assets/
 thirdparty/vlearn
 
+# Optional Unitree SDK checkout, including upstream native CRC libraries
+thirdparty/unitree_sdk2_python/
+
 # Local simulator and notebook outputs
 MUJOCO_LOG.TXT
 pendulum_rollout.png

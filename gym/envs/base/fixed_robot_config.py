@@ -133,15 +133,12 @@ class FixedRobotCfgPPO(BaseConfig):
                 termination = 0.0
 
     class algorithm:
-        # both
         gamma = 0.99
         lam = 0.95
-        # shared
         batch_size = 2**15
         max_gradient_steps = 24
-        # new
-        storage_size = 2**17  # new
-        batch_size = 2**15  #  new
+        # New transitions per PPO update, independent of optimizer minibatches.
+        rollout_size = 2**16
 
         clip_param = 0.2
         learning_rate = 1.0e-3

@@ -222,6 +222,9 @@ class MuJocoWarpBackend(MuJocoBackendBase):
                     batch_sizes[name] = num_envs
             self._m = mjw.put_model(mjm, batch_sizes=batch_sizes or None)
             mjd = mujoco.MjData(mjm)
+            # mujoco-warp ignores the legacy mjModel.njmax field; forward it
+            # (cfg.mjspec_attributes.njmax → spec → mjm → put_data).  -1
+            # means unset → let warp use its own heuristic.
             njmax = mjm.njmax if mjm.njmax > 0 else None
             self._d = mjw.put_data(mjm, mjd, nworld=num_envs, njmax=njmax)
 
@@ -287,10 +290,6 @@ class MuJocoWarpBackend(MuJocoBackendBase):
             mjw.com_pos(self._m, self._d)
             mjw.com_vel(self._m, self._d)
         self._sync_assembled_states()
-
-            self.root_states[...] = (
-                self._root_states_t
-            )  # fixes root_states from not being updated
 
     # ── Reset ──────────────────────────────────────────────────────────────────
 

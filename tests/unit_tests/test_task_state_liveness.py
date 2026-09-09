@@ -15,6 +15,8 @@ warp dof_state torch.stack-copy staleness (pendulum _reward_equilibrium pegged
 at 1.0 on GPU; found 2026-07-24).
 """
 
+from copy import deepcopy
+
 import pytest
 import torch
 
@@ -28,7 +30,7 @@ def _build_env(device: str):
 
     import gym.envs  # noqa: F401  — registers tasks
 
-    env_cfg, train_cfg = task_registry.get_cfgs("mini_cheetah")
+    env_cfg, train_cfg = deepcopy(task_registry.get_cfgs("mini_cheetah"))
     env_cfg.env.num_envs = 2
     env_cfg.env.episode_length_s = 50  # no timeout-driven resets during the test
     env_cfg.seed = 0
@@ -100,7 +102,7 @@ def _build_env_reset_to_basic(device: str, base_z: float):
 
     import gym.envs  # noqa: F401  — registers tasks
 
-    env_cfg, train_cfg = task_registry.get_cfgs("mini_cheetah")
+    env_cfg, train_cfg = deepcopy(task_registry.get_cfgs("mini_cheetah"))
     env_cfg.env.num_envs = 4
     env_cfg.env.episode_length_s = 50
     env_cfg.push_robots.toggle = False
@@ -118,11 +120,14 @@ def _assert_base_spawns_at_configured_height(device: str):
     # pending root write has been committed.
     base_z = 0.42
     env = _build_env_reset_to_basic(device, base_z)
-    z = env.root_states[:, 2]
-    assert torch.allclose(z, torch.full_like(z, base_z), atol=2e-2), (
-        f"floating base spawned at z={z.tolist()} on {device}, expected "
-        f"~{base_z} — the atomic reset did not preserve the pending root state"
-    )
+    try:
+        z = env.root_states[:, 2]
+        assert torch.allclose(z, torch.full_like(z, base_z), atol=2e-2), (
+            f"floating base spawned at z={z.tolist()} on {device}, expected "
+            f"~{base_z} — the atomic reset did not preserve the pending root state"
+        )
+    finally:
+        env._backend.close()
 
 
 def test_floating_base_reset_placement_cpu():
@@ -136,10 +141,16 @@ def test_floating_base_reset_placement_warp():
 
 def test_task_state_liveness_cpu():
     env = _build_env(device="cpu")
-    _step_and_check_liveness(env)
+    try:
+        _step_and_check_liveness(env)
+    finally:
+        env._backend.close()
 
 
 @pytest.mark.warp
 def test_task_state_liveness_warp():
     env = _build_env(device="cuda:0")
-    _step_and_check_liveness(env)
+    try:
+        _step_and_check_liveness(env)
+    finally:
+        env._backend.close()

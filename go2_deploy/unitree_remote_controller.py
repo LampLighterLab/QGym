@@ -2,7 +2,7 @@ import time
 import sys
 import struct
 
-from deploy_config import DeployConfig
+from go2_deploy.deploy_config import DeployConfig
 from go2_deploy.state import State
 
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelFactoryInitialize

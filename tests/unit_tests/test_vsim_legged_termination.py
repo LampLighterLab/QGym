@@ -7,6 +7,8 @@ validates the per-link contact sensors end-to-end through the task layer.
 Opt-in: runs only under scripts/run_vsim_tests.sh (license + CUDA).
 """
 
+from copy import deepcopy
+
 import pytest
 import torch
 
@@ -19,7 +21,7 @@ pytestmark = pytest.mark.vsim
 def _build_env():
     import gym.envs  # noqa: F401  — registers tasks
 
-    env_cfg, train_cfg = task_registry.get_cfgs("mini_cheetah")
+    env_cfg, train_cfg = deepcopy(task_registry.get_cfgs("mini_cheetah"))
     env_cfg.env.num_envs = 2
     env_cfg.env.episode_length_s = 50
     env_cfg.seed = 0
@@ -34,8 +36,10 @@ def _build_env():
 def vsim_env():
     vsim_guard()
     env = _build_env()
-    yield env
-    env._backend.close()
+    try:
+        yield env
+    finally:
+        env._backend.close()
 
 
 def test_termination_on_base_contact_vsim(vsim_env):

@@ -1,7 +1,7 @@
 from gym.utils.task_registry import task_registry
 from gym.utils.helpers import set_seed
 import gym.envs  # noqa: F401
-from deploy_config import DeployConfig
+from go2_deploy.deploy_config import DeployConfig
 
 import random
 import torch

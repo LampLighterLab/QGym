@@ -1,18 +1,29 @@
-from unitree_sdk2py.core import channel
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-from main_controller import MainController
-from keyboard_handler import KeyboardHandler
+import argparse
 import sys
-
 import time
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(
-            "Must pass the name of the robot network interface as an argument, ex. eth0"
+    parser = argparse.ArgumentParser(description="Deploy a policy to a Unitree Go2.")
+    parser.add_argument("interface", help="Robot network interface, e.g. eth0")
+    args = parser.parse_args()
+    if sys.platform != "linux":
+        parser.error("Go2 deployment requires Linux (timerfd).")
+
+    try:
+        from unitree_sdk2py.core import channel
+        from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+    except ModuleNotFoundError as exc:
+        if exc.name != "unitree_sdk2py":
+            raise
+        parser.error(
+            "Unitree SDK is not installed. Follow README_DEPLOY.md, then run "
+            "uv run --frozen --extra unitree_sdk python -m go2_deploy.deploy "
+            "<interface>."
         )
-        sys.exit()
+
+    from go2_deploy.main_controller import MainController
+    from go2_deploy.keyboard_handler import KeyboardHandler
 
     # CycloneDDS 0.10.2 bug workaround
     channel.ChannelConfigHasInterface = channel.ChannelConfigHasInterface.replace(
@@ -21,7 +32,7 @@ def main():
 
     ChannelFactoryInitialize(
         0,
-        sys.argv[1],  # Name of robot network interface (terminal: `ifconfig`)
+        args.interface,
     )
     controller = MainController()  # noqa: F841
     keyboard_handler = KeyboardHandler(controller)  # noqa: F841

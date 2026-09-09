@@ -25,21 +25,6 @@ class MujocoKeyboardInterface:
         self.commands.print_help("MuJoCo viewer")
 
     def _on_key(self, keycode: int) -> None:
-        c = self.env.commands
-        if keycode == KEY_UP:
-            c[:, 0] = torch.clamp(c[:, 0] + self.increment_x, max=self.max_vel_forward)
-        elif keycode == KEY_DOWN:
-            c[:, 0] = torch.clamp(c[:, 0] - self.increment_x, min=self.max_vel_backward)
-        elif keycode == KEY_COMMA:
-            c[:, 1] = torch.clamp(c[:, 1] + self.increment_y, max=self.max_vel_sideways)
-        elif keycode == KEY_PERIOD:
-            c[:, 1] = torch.clamp(
-                c[:, 1] - self.increment_y, min=-self.max_vel_sideways
-            )
-        elif keycode == KEY_LEFT:
-            c[:, 2] = torch.clamp(c[:, 2] + self.increment_yaw, max=self.max_vel_yaw)
-        elif keycode == KEY_RIGHT:
-            c[:, 2] = torch.clamp(c[:, 2] - self.increment_yaw, min=-self.max_vel_yaw)
-        elif keycode == KEY_R:
-            self.env.timed_out[:] = True
-            self.env.reset()
+        action = KEYCODE_TO_ACTION.get(keycode)
+        if action is not None:
+            self.commands.apply(action)

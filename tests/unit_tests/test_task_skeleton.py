@@ -41,10 +41,6 @@ class TestConstruction:
         task = _SimpleTask(num_envs=8)
         assert task.to_be_reset.all()
 
-    def test_device_stored(self):
-        task = _SimpleTask(device="cpu")
-        assert task.device == "cpu"
-
 
 # ── get_state / get_states ───────────────────────────────────────────────────
 

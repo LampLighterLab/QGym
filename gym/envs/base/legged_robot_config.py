@@ -119,7 +119,6 @@ class LeggedRobotCfg(BaseConfig):
         fix_base_link = False
         rotor_inertia = 0.0
         joint_damping = 0.0
-        collapse_fixed_joints = False
 
     class reward_settings:
         # * tracking reward = exp(-error^2/sigma)

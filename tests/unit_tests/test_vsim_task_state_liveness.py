@@ -7,6 +7,8 @@ CACHED root_states / rigid-body tensors update in place after step().
 Opt-in: runs only under scripts/run_vsim_tests.sh (license + CUDA).
 """
 
+from copy import deepcopy
+
 import pytest
 import torch
 
@@ -21,7 +23,7 @@ def vsim_env():
     vsim_guard()
     import gym.envs  # noqa: F401
 
-    env_cfg, train_cfg = task_registry.get_cfgs("mini_cheetah")
+    env_cfg, train_cfg = deepcopy(task_registry.get_cfgs("mini_cheetah"))
     env_cfg.env.num_envs = 2
     env_cfg.env.episode_length_s = 50
     env_cfg.seed = 0
@@ -31,8 +33,10 @@ def vsim_env():
     env = task_registry.make_env(
         "mini_cheetah", env_cfg, device="cuda:0", headless=True, backend="vsim"
     )
-    yield env
-    env._backend.close()
+    try:
+        yield env
+    finally:
+        env._backend.close()
 
 
 def test_task_state_liveness_vsim(vsim_env):

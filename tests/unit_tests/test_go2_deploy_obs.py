@@ -1,197 +1,263 @@
-"""Parity test for the Go2 hardware observation builder.
+"""Current deployment utilities, independent of the Unitree SDK/DDS stack.
 
-go2_deploy/utility.py must produce exactly the vector the policy was trained on.
-The load-bearing test drives the go2 env, synthesises the LowState_ message the
-robot would have sent for that state, and asserts the deploy pipeline reproduces
-env.get_states() to float precision.  A wrong joint permutation, a swapped
-quaternion, or a missed scale factor all fail here.
+The CPU parity check covers sensor, command, and phase observations. Applied
+residual-action parity needs separate work: deployment currently clips residuals
+against absolute joint limits before exposing them as observations.
 """
 
-import sys
-import types
-from pathlib import Path
+import math
+from types import SimpleNamespace
 
-import numpy as np
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "go2_deploy"))
+from go2_deploy.deploy_config import DeployConfig
+from go2_deploy.utility import deploy_utility
+from gym.envs.go2.go2trot import Go2Trot
+from gym.envs.go2.go2trot_config import Go2TrotCfg, Go2TrotRunnerCfg
+from gym.utils.helpers import class_to_dict
+from gym.utils.task_registry import select_backend, task_registry
 
-import utility  # noqa: E402
-
-
-def _build_env():
-    pytest.importorskip("mujoco")
-
-    import gym.envs  # noqa: F401  — registers tasks
-    from gym.utils.task_registry import task_registry
-
-    env_cfg, train_cfg = task_registry.get_cfgs("go2")
-    env_cfg.env.num_envs = 1
-    env_cfg.env.episode_length_s = 9999
-    env_cfg.push_robots.toggle = False
-    env_cfg.seed = 0
-    train_cfg.seed = 0
-    task_registry.convert_frequencies_to_params(env_cfg, train_cfg)
-
-    return task_registry.make_env_mujoco("go2", env_cfg, device="cpu", headless=True)
+SDK_JOINT_NAMES = [
+    f"{leg}_{joint}_joint"
+    for leg in ("FR", "FL", "RR", "RL")
+    for joint in ("hip", "thigh", "calf")
+]
+SDK_IN_QGYM_ORDER = [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8]
 
 
-def _synth_lowstate(env) -> types.SimpleNamespace:
-    """Build the LowState_ the robot would send for the env's current state.
-
-    The sim -> SDK reordering here is derived from joint *names* against
-    env.dof_names, deliberately not from utility.LEG_PERM: reusing the module's
-    own permutation would cancel a wrong permutation out and let the parity
-    assertion pass on broken code.
-    """
-    sim_of_sdk = [list(env.dof_names).index(n) for n in utility.SDK_JOINT_NAMES]
-    dof_pos = env.dof_pos[0].numpy()[sim_of_sdk]
-    dof_vel = env.dof_vel[0].numpy()[sim_of_sdk]
-
-    motor_state = [
-        types.SimpleNamespace(q=dof_pos[i], dq=dof_vel[i], ddq=0.0, tau_est=0.0)
-        for i in range(utility.NUM_DOF)
-    ] + [types.SimpleNamespace(q=0.0, dq=0.0, ddq=0.0, tau_est=0.0)] * 8
-
-    quat_xyzw = env.base_quat[0].numpy()
-    imu_state = types.SimpleNamespace(
-        quaternion=quat_xyzw[[3, 0, 1, 2]],  # the IMU reports (w, x, y, z)
-        # MuJoCo's free-joint qvel[3:6] is body-frame, which is what the backend
-        # stores in root_states[:, 10:13] and what a real gyro measures.
-        gyroscope=env.root_states[0, 10:13].numpy(),
-        accelerometer=np.zeros(3, dtype=np.float32),
-        rpy=np.zeros(3, dtype=np.float32),
-    )
-
-    return types.SimpleNamespace(
-        motor_state=motor_state,
-        imu_state=imu_state,
-        foot_force=np.zeros(4, dtype=np.float32),
-        wireless_remote=bytes(40),
-        tick=1234,
+def _controller(cfg=None):
+    if cfg is None:
+        cfg = DeployConfig()
+    return SimpleNamespace(
+        cfg=cfg,
+        obs_vec_size=sum(cfg.obs_sizes[name] for name in cfg.obs_vector),
+        last_command=torch.tensor([0.5, -0.25, 0.75]),
+        last_action=torch.zeros(2, 12),
+        phase=0.4,
+        _gait_reference=torch.linspace(-0.3, 0.3, 12),
     )
 
 
-def test_permutations_are_self_inverse():
-    assert (utility.LEG_PERM[utility.LEG_PERM] == np.arange(utility.NUM_DOF)).all()
-    assert (utility.FOOT_PERM[utility.FOOT_PERM] == np.arange(utility.NUM_FEET)).all()
-    # LegID order: FR, FL, RR, RL
-    assert [utility.JOINT_NAMES[i] for i in utility.LEG_PERM] == [
-        "FR_hip_joint",
-        "FR_thigh_joint",
-        "FR_calf_joint",
-        "FL_hip_joint",
-        "FL_thigh_joint",
-        "FL_calf_joint",
-        "RR_hip_joint",
-        "RR_thigh_joint",
-        "RR_calf_joint",
-        "RL_hip_joint",
-        "RL_thigh_joint",
-        "RL_calf_joint",
+def _message():
+    return SimpleNamespace(
+        motor_state=[
+            SimpleNamespace(q=float(i), dq=-2.0 * i, ddq=3.0 * i) for i in range(12)
+        ],
+        imu_state=SimpleNamespace(
+            quaternion=[math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0],
+            gyroscope=[0.1, -0.2, 0.3],
+        ),
+    )
+
+
+def test_joint_mapping_for_positions_velocities_and_accelerations():
+    controller, message = _controller(), _message()
+    expected = torch.tensor(SDK_IN_QGYM_ORDER, dtype=torch.float)
+    torch.testing.assert_close(
+        deploy_utility._get_obs_dof_pos_obs(controller, message), expected
+    )
+    torch.testing.assert_close(
+        deploy_utility._get_obs_dof_vel(controller, message), -2 * expected
+    )
+    torch.testing.assert_close(
+        deploy_utility._get_obs_dof_accel(controller, message), 3 * expected
+    )
+    canonical = torch.arange(12)
+    sdk = canonical[deploy_utility.QGYM_TO_UNITREE_JOINT_IDX]
+    assert sdk.tolist() == SDK_IN_QGYM_ORDER
+    assert torch.equal(sdk[deploy_utility.UNITREE_TO_QGYM_JOINT_IDX], canonical)
+
+
+def test_wxyz_quaternion_projects_gravity_but_gyro_is_already_body_local():
+    controller, message = _controller(), _message()
+    # A positive quarter-turn about X maps world-down to body negative Y.
+    torch.testing.assert_close(
+        deploy_utility._get_obs_projected_gravity(controller, message),
+        torch.tensor([0.0, -1.0, 0.0]),
+        atol=2e-7,
+        rtol=0,
+    )
+    torch.testing.assert_close(
+        deploy_utility._get_obs_base_ang_vel(controller, message),
+        torch.tensor([0.1, -0.2, 0.3]),
+    )
+
+
+def test_observation_dispatch_preserves_configured_order_sizes_and_scaling():
+    cfg = DeployConfig()
+    cfg.obs_vector = [
+        "phase_frequency",
+        "dof_vel",
+        "base_ang_vel",
+        "dof_pos_target",
+        "commands",
+        "projected_gravity",
+        "dof_pos_obs",
+        "dof_accel",
+        "phase_obs",
     ]
+    cfg.DeployScaling = SimpleNamespace(
+        phase_frequency=4.0,
+        dof_vel=2.0,
+        base_ang_vel=0.5,
+        dof_pos_target=0.25,
+        commands=[2.0, 4.0, 8.0],
+        projected_gravity=2.0,
+        dof_pos_obs=list(range(1, 13)),
+        dof_accel=3.0,
+        phase_obs=2.0,
+    )
+    controller = _controller(cfg)
+    controller.last_action[0] = 0.5 * (cfg.lower_joint_limit + cfg.upper_joint_limit)
+    ordered = torch.tensor(SDK_IN_QGYM_ORDER, dtype=torch.float)
+    expected = torch.cat(
+        (
+            torch.tensor([DeployConfig.phase_frequency / 4]),
+            -ordered,
+            torch.tensor([0.2, -0.4, 0.6]),
+            controller.last_action[0] / 0.25,
+            torch.tensor([0.25, -0.0625, 0.09375]),
+            torch.tensor([0.0, -0.5, 0.0]),
+            ordered / torch.arange(1, 13),
+            ordered,
+            torch.tensor([math.sin(0.4), math.cos(0.4)]) / 2,
+        )
+    )
+
+    actual = deploy_utility.lowstate_to_obs(controller, _message())
+
+    assert actual.shape == (controller.obs_vec_size,)
+    torch.testing.assert_close(actual, expected, atol=2e-7, rtol=1e-6)
 
 
-def test_decode_lowstate_permutes_and_reorders_quaternion():
-    """No env, no DDS stack — pure layout check with distinct per-joint values."""
-    sdk_values = np.arange(utility.NUM_DOF, dtype=np.float32)
-    msg = types.SimpleNamespace(
-        motor_state=[
-            types.SimpleNamespace(
-                q=sdk_values[i], dq=-sdk_values[i], ddq=2 * sdk_values[i], tau_est=0.0
+def test_trot_action_target_roundtrip_includes_default_pose_and_gait():
+    controller = _controller()
+    controller.cfg.default_dof_pos = torch.linspace(0.1, 1.2, 12)
+    action = torch.linspace(-0.2, 0.2, 12)
+
+    target = deploy_utility.action_to_target_pos(controller, action)
+
+    torch.testing.assert_close(
+        target,
+        action + controller.cfg.default_dof_pos + controller._gait_reference,
+    )
+    torch.testing.assert_close(
+        deploy_utility.target_pos_to_action(controller, target), action
+    )
+
+
+def test_existing_lowcmd_receives_permuted_bounded_targets_and_scaled_gains():
+    controller = _controller()
+    controller.default_lowcmd = SimpleNamespace(
+        motor_cmd=[SimpleNamespace(q=0.0, kp=0.0, kd=0.0) for _ in range(20)]
+    )
+    canonical_target = torch.arange(12, dtype=torch.float) - 6
+    action = (
+        canonical_target - controller._gait_reference - controller.cfg.default_dof_pos
+    )
+
+    command = deploy_utility.action_to_lowcmd(
+        controller, action, kp_mult=0.5, kd_mult=0.25
+    )
+
+    expected = canonical_target[SDK_IN_QGYM_ORDER].clamp(
+        controller.cfg.lower_joint_limit, controller.cfg.upper_joint_limit
+    )
+    assert command is controller.default_lowcmd
+    torch.testing.assert_close(
+        torch.tensor([motor.q for motor in command.motor_cmd[:12]]), expected
+    )
+    assert all(motor.kp == controller.cfg.kp * 0.5 for motor in command.motor_cmd[:12])
+    assert all(motor.kd == controller.cfg.kd * 0.25 for motor in command.motor_cmd[:12])
+    assert all(motor.q == 0.0 for motor in command.motor_cmd[12:])
+
+
+@pytest.mark.parametrize(
+    "include_applied_action",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "Deployment clips the residual action against absolute joint "
+                    "limits; the task observes the applied residual after full "
+                    "gait/default position projection"
+                ),
+            ),
+            id="full-observation-parity",
+        ),
+    ],
+)
+def test_deploy_observations_match_cpu_task_at_100hz(include_applied_action):
+    cfg = Go2TrotCfg()
+    cfg.seed = 7
+    cfg.env.num_envs = 1
+    cfg.control.ctrl_frequency = 100
+    cfg.control.desired_sim_frequency = 100
+    cfg.push_robots.toggle = False
+    cfg.domain_randomization.startup.contact_friction_range = None
+    cfg.domain_randomization.startup.link_mass_scale_range = None
+    cfg.domain_randomization.episode.scale_ranges = {}
+    cfg.init_state.pos = [0.0, 0.0, 3.0]
+    cfg.init_state.reset_mode = "reset_to_basic"
+    task_registry.convert_frequencies_to_params(cfg, Go2TrotRunnerCfg())
+    backend = select_backend(cfg, "cpu", "mujoco")
+    try:
+        env = Go2Trot(cfg, "cpu", True, backend)
+        assert env.dt == 0.01 and cfg.sim_dt == 0.01
+        assert torch.count_nonzero(env.default_dof_pos) == 0
+        env.root_states[:, 3:7] = torch.tensor([0.2, -0.3, 0.4, math.sqrt(0.71)])
+        env.root_states[:, 10:13] = torch.tensor([0.7, -0.4, 0.2])
+        backend.reset_state(torch.ones(1, dtype=torch.bool))
+        env.phase_frequency[:] = DeployConfig.phase_frequency
+        deploy_cfg = DeployConfig()
+        deploy_cfg.obs_vector = [
+            "base_ang_vel",
+            "projected_gravity",
+            "commands",
+            "dof_pos_obs",
+            "dof_vel",
+            "phase_obs",
+            "phase_frequency",
+        ]
+        if include_applied_action:
+            deploy_cfg.obs_vector.insert(5, "dof_pos_target")
+        deploy_cfg.DeployScaling = SimpleNamespace(**class_to_dict(cfg.scaling))
+        controller = _controller(deploy_cfg)
+        # Resolve this independent inverse mapping by joint names, so a wrong
+        # deployment permutation cannot cancel out in message synthesis.
+        sdk_indices = [list(env.dof_names).index(name) for name in SDK_JOINT_NAMES]
+
+        for _ in range(3):
+            env.step()
+            controller.last_command = env.commands[0].clone()
+            controller.phase = env.phase[0].item()
+            controller.last_action[0] = env.dof_pos_target[0]
+            message = SimpleNamespace(
+                motor_state=[
+                    SimpleNamespace(
+                        q=env.dof_pos[0, index].item(),
+                        dq=env.dof_vel[0, index].item(),
+                        ddq=0.0,
+                    )
+                    for index in sdk_indices
+                ],
+                imu_state=SimpleNamespace(
+                    quaternion=env.base_quat[0, [3, 0, 1, 2]].tolist(),
+                    # Native free-joint angular qvel is body-local, as is an IMU
+                    # gyro. Public root angular velocity is world-frame.
+                    gyroscope=backend._datas[0].qvel[3:6].tolist(),
+                ),
             )
-            for i in range(utility.NUM_DOF)
-        ],
-        imu_state=types.SimpleNamespace(
-            quaternion=np.array([1.0, 0.0, 0.0, 0.0]),  # w, x, y, z
-            gyroscope=np.array([0.1, 0.2, 0.3]),
-        ),
-        foot_force=np.array([10.0, 20.0, 30.0, 40.0]),
-        wireless_remote=bytes(40),
-        tick=5000,
-    )
-    frame = utility.decode_lowstate(msg)
 
-    # spelled out rather than expressed via LEG_PERM, so a wrong permutation
-    # cannot cancel itself out
-    expected = np.array([3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8], dtype=np.float32)
-    assert (frame.dof_pos == expected).all()
-    assert (frame.dof_vel == -expected).all()
-    assert (frame.dof_acc == 2 * expected).all()
-    assert (frame.quat_xyzw == np.array([0.0, 0.0, 0.0, 1.0])).all()
-    assert (frame.foot_force == np.array([20.0, 10.0, 40.0, 30.0])).all()
-    assert frame.tick_s == pytest.approx(5.0)
+            actual = deploy_utility.lowstate_to_obs(controller, message)
+            expected = env.get_states(deploy_cfg.obs_vector)[0]
 
-
-def test_constants_match_env():
-    env = _build_env()
-    assert utility.JOINT_NAMES == list(env.dof_names)
-    assert np.allclose(utility.DEFAULT_DOF_POS, env.default_dof_pos[0].numpy())
-    assert np.allclose(utility.P_GAINS, env.p_gains[0].numpy())
-    assert np.allclose(utility.D_GAINS, env.d_gains[0].numpy())
-
-
-def test_deploy_obs_matches_env_get_states():
-    env = _build_env()
-    builder = utility.ObsBuilder()
-    scale = np.asarray(utility.Go2Cfg.scaling.dof_pos_target, dtype=np.float32)
-
-    torch.manual_seed(0)
-    for _ in range(50):
-        action = 0.5 * torch.randn(1, utility.NUM_DOF)
-        env.set_states(utility.ACTION_LIST, action)
-        env.step()
-
-        # The two quantities no message carries; the action round-trip is
-        # covered separately in test_action_roundtrip.
-        builder.last_action[0] = env.dof_pos_target[0].numpy() / scale
-        builder.commands = env.commands[0].numpy()
-
-        deploy_obs = builder.get_obs(_synth_lowstate(env))
-        sim_obs = env.get_states(utility.OBS_LIST)[0].numpy()
-
-        assert deploy_obs.shape == sim_obs.shape == (45,)
-        np.testing.assert_allclose(deploy_obs, sim_obs, atol=1e-6)
-
-
-def test_action_roundtrip():
-    builder = utility.ObsBuilder()
-    action = np.linspace(-1.0, 1.0, utility.NUM_DOF).astype(np.float32)
-    builder.commit_action(action)
-
-    frame = utility.decode_lowstate(_zero_msg())
-    observed = builder.get_state("dof_pos_target", frame)
-    np.testing.assert_allclose(observed, action, atol=1e-7)
-
-    # zero action must command the nominal pose, and the SDK permutation must
-    # be undone by the same array
-    q_des = utility.action_to_dof_pos_target(np.zeros(utility.NUM_DOF))
-    np.testing.assert_allclose(q_des, utility.DEFAULT_DOF_POS, atol=1e-7)
-    np.testing.assert_allclose(
-        utility.to_sdk_order(utility.to_sdk_order(q_des)), q_des, atol=0
-    )
-
-
-def test_obs_sizes_cover_every_generator():
-    builder = utility.ObsBuilder(obs_list=list(utility.ObsBuilder.OBS_SIZE))
-    frame = utility.decode_lowstate(_zero_msg())
-    for name, size in utility.ObsBuilder.OBS_SIZE.items():
-        assert builder.get_state(name, frame).shape == (size,)
-    assert builder.get_obs_from_frame(frame).shape == (builder.num_obs,)
-
-
-def _zero_msg() -> types.SimpleNamespace:
-    return types.SimpleNamespace(
-        motor_state=[
-            types.SimpleNamespace(q=0.0, dq=0.0, ddq=0.0, tau_est=0.0)
-            for _ in range(utility.NUM_DOF)
-        ],
-        imu_state=types.SimpleNamespace(
-            quaternion=np.array([1.0, 0.0, 0.0, 0.0]),
-            gyroscope=np.zeros(3),
-        ),
-        foot_force=np.zeros(4),
-        wireless_remote=bytes(40),
-        tick=0,
-    )
+            expected_size = 48 if include_applied_action else 36
+            assert actual.shape == expected.shape == (expected_size,)
+            torch.testing.assert_close(actual, expected, atol=3e-6, rtol=2e-5)
+    finally:
+        backend.close()

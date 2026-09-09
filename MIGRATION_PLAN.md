@@ -26,6 +26,58 @@ general convex multi-contact CCD; Go2 disables that path and retains primitive
 multi-point contacts, with the captured pose covered by a subprocess
 regression. Do not reintroduce legacy engine-specific callbacks.
 
+## Streamlining regression calibration
+
+The 100 Hz regression push is tracked in `STREAMLINING_PLAN.md`; the behavior
+and cost review is in `tests/TEST_CATALOG.md`. Pendulum now declares the PPO
+runner's required `rollout_size`; unused PPO `storage_size` declarations and
+the unsupported `collapse_fixed_joints` field are removed.
+
+The first controlled pendulum calibration used seed 7, matching initial
+actor/critic weights, 512 environments, 65,536 samples per update, and 400
+updates on each GPU backend. Both engines stayed finite and passed fresh-runner
+checkpoint/optimizer restoration plus update 401, but both caught and held only
+38/256 evaluation starts (14.84%), against the proposed 80% target. This is
+failed learning evidence, not a usable learning reference. Preserve the
+artifacts under `logs/streamlining/pendulum/` and the offline diagnosis there.
+
+Most reward improvement came from suppressing angular velocity. The saved
+trajectories do not establish the known unwrapped-angle reward alias as the
+main cause. Before changing rewards or lowering a threshold, compare the
+existing analytic swing-up controller's physical success and discounted return
+on the same initial grid. The shared learning failure does not invalidate the
+separate Go2 DR campaign evidence. Simulation speed calibration and Warp/VSim
+host/CUDA profiling proceed independently; broad learner refactoring waits for
+a meaningful physical learning gate.
+
+## Rebase verification (2026-09-08)
+
+Compared `cdx_freeze` with `cdx` and restored the reference Warp step,
+keyboard dispatch, canonical viewer pose, yaw reward, constraint capacity,
+VSim solver setting, and matching lockfile. The pre-rebase auto-stash contained
+70 additional project files, including the missing friction fixture and the
+SDK/streamlining work; those sources are recovered, with the stash retained
+and archived vendor binaries/licenses excluded.
+
+Validation: 309 portable tests passed with one existing expected failure,
+31 Warp tests passed, 47 VSim tests passed, and 38 colocated tests passed.
+Lock validation, Ruff, and package builds passed. Matching seed-7 pendulum
+smokes at 100 Hz completed two updates and checkpoint reload/resume on both
+GPU backends. These short smokes establish execution correctness, not learning
+quality or a speed baseline. The prior failed learning calibration above
+remains unresolved.
+
+Reference-gait weights remain deliberate tuning differences: `reference_traj`
+is 3.0 versus 0.5 in `cdx`, and `swing_grf`/`stance_grf` are each 1.5 versus
+0.5. Their effect on trained policies has not been established by this audit.
+The existing deployment residual-action clipping mismatch remains an expected
+failure. The 16 optional Unitree integration tests were not run because the
+native Cyclone DDS dependency is unavailable in the current environment;
+the SDK fetch helper verified the configured source revision.
+
+Commands, original diffs, recovery manifest, and test/training artifacts are
+under `logs/rebase_audit/20260908/README.md`.
+
 ## Revised immediate plan
 
 1. **Complete:** correct MuJoCo CPU/Warp free-root angular velocity at the

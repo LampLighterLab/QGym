@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from gym.envs.base.legged_robot import LeggedRobot
@@ -40,7 +41,8 @@ def test_position_target_limit_reward_is_zero_inside_and_normalized_outside():
     )
 
 
-def test_mini_cheetah_yaw_tracking_uses_squared_not_fourth_power_error():
+@pytest.mark.parametrize("scale", [None, 1.0])
+def test_mini_cheetah_yaw_tracking_uses_squared_not_fourth_power_error(scale):
     class RewardFixture:
         commands = torch.tensor([[0.0, 0.0, 1.0]])
         base_ang_vel = torch.tensor([[0.0, 0.0, 0.0]])
@@ -51,8 +53,12 @@ def test_mini_cheetah_yaw_tracking_uses_squared_not_fourth_power_error():
 
         _sqrdexp = LeggedRobot._sqrdexp
 
-    reward = MiniCheetah._reward_tracking_ang_vel(RewardFixture())
-    expected = torch.exp(torch.tensor(-((1.0 / 2.5) ** 2) / 0.25))
+    task = RewardFixture()
+    if scale is not None:
+        task.cfg.reward_settings.tracking_ang_vel_scale = scale
+    reward = MiniCheetah._reward_tracking_ang_vel(task)
+    expected_exponent = -0.64 if scale is None else -4.0
+    expected = torch.exp(torch.tensor(expected_exponent))
 
     assert torch.allclose(reward, expected.expand_as(reward))
 

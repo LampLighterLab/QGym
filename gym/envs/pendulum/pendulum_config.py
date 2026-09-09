@@ -106,15 +106,10 @@ class PendulumRunnerCfg(FixedRobotCfgPPO):
                 termination = 0.0
 
     class algorithm(FixedRobotCfgPPO.algorithm):
-        # both
         gamma = 0.95
-        # discount_horizon = 2.0
         lam = 0.98
-        # shared
         max_gradient_steps = 24
-        # new
-        storage_size = 2**17  # new
-        batch_size = 2**16  #  new
+        batch_size = 2**16
         clip_param = 0.2
         learning_rate = 1.0e-4
         max_grad_norm = 1.0
@@ -122,7 +117,7 @@ class PendulumRunnerCfg(FixedRobotCfgPPO):
         use_clipped_value_loss = True
         # Actor
         entropy_coef = 0.01
-        schedule = "fixed"  # could be adaptive, fixed
+        schedule = "adaptive"  # could be adaptive, fixed
         desired_kl = 0.01
 
     class runner(FixedRobotCfgPPO.runner):

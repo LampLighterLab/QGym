@@ -6,6 +6,8 @@ catches the bug where MuJoCo's cfrc_ext is left at zero unless
 mj_rnePostConstraint / rne_postconstraint is called after the step.
 """
 
+from copy import deepcopy
+
 import pytest
 import torch
 
@@ -19,7 +21,7 @@ def _build_env(device: str):
 
     import gym.envs  # noqa: F401  — registers tasks
 
-    env_cfg, train_cfg = task_registry.get_cfgs("mini_cheetah")
+    env_cfg, train_cfg = deepcopy(task_registry.get_cfgs("mini_cheetah"))
     env_cfg.env.num_envs = 2
     env_cfg.env.episode_length_s = 50  # don't let timeout fire first
     env_cfg.seed = 0
@@ -57,16 +59,22 @@ def _run_drop_and_detect(env) -> bool:
 
 def test_termination_on_base_contact_cpu():
     env = _build_env(device="cpu")
-    assert _run_drop_and_detect(env), (
-        "base never registered contact force after upside-down fall — "
-        "cfrc_ext is likely not being populated by mj_rnePostConstraint"
-    )
+    try:
+        assert _run_drop_and_detect(env), (
+            "base never registered contact force after upside-down fall — "
+            "cfrc_ext is likely not being populated by mj_rnePostConstraint"
+        )
+    finally:
+        env._backend.close()
 
 
 @pytest.mark.warp
 def test_termination_on_base_contact_warp():
     env = _build_env(device="cuda:0")
-    assert _run_drop_and_detect(env), (
-        "base never registered contact force after upside-down fall — "
-        "cfrc_ext is likely not being populated by mjw.rne_postconstraint"
-    )
+    try:
+        assert _run_drop_and_detect(env), (
+            "base never registered contact force after upside-down fall — "
+            "cfrc_ext is likely not being populated by mjw.rne_postconstraint"
+        )
+    finally:
+        env._backend.close()
