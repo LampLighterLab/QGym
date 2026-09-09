@@ -1,9 +1,20 @@
-# Installation instructions
+# Q2
 
-- Clone the repo: `git clone https://github.com/LampLighterLab/QGym.git`
-- Create the python virtual environment: `cd QGym` then `uv venv`
-- Activate the virtual environment: `source .venv/bin/activate`s
+Q2 is a robotics and reinforcement-learning framework descended from
+[legged_gym](https://github.com/leggedrobotics/legged_gym). It supports MuJoCo CPU,
+MuJoCo Warp, and optional licensed VSim physics backends.
 
-# pkGym #
-This repository is a port of [legged_gym](https://github.com/leggedrobotics/legged_gym) from the good folk over at RSL, with some significant refactoring.  
-See the [wiki](https://github.com/mit-biomimetics/pkGym/wiki) for details on installation etc..
+Follow [the setup and training guide](README_MUJOCO.md) for installation,
+backend selection, and the supported command-line workflows. From a checkout
+with Python 3.11 and uv installed, the default setup and test commands are:
+
+```bash
+uv sync --frozen
+uv run --frozen python -m pytest -q
+```
+
+Go2 hardware deployment uses the optional `unitree_sdk` extra. See the
+[deployment guide](README_DEPLOY.md) for the SDK and native dependencies.
+
+Historical project notes are available in the
+[QGym wiki](https://github.com/sheim/QGym/wiki).
