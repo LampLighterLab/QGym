@@ -59,7 +59,6 @@ class SmoothActor(Actor):
 
     @property
     def get_std(self):
-        # TODO[lm]: Check if this is ok, and can use action_std in ActorCritic normally
         if self.use_exp_ln:
             # From gSDE paper, it allows to keep variance
             # above zero and prevent it from growing too fast

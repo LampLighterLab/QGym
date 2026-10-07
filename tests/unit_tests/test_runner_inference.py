@@ -7,7 +7,6 @@ import torch
 from learning.runners.datalogging_runner import DataLoggingRunner
 from learning.runners.BaseRunner import BaseRunner
 from learning.runners.off_policy_runner import OffPolicyRunner
-from learning.runners.old_policy_runner import OldPolicyRunner
 from learning.runners.on_policy_runner import OnPolicyRunner
 
 
@@ -30,10 +29,7 @@ def _runner_without_noise(runner_type):
 
     runner.get_noisy_obs = reject_noisy_observation
     actor = _Actor()
-    if runner_type is OldPolicyRunner:
-        runner.alg = SimpleNamespace(actor_critic=SimpleNamespace(actor=actor))
-    else:
-        runner.alg = SimpleNamespace(actor=actor)
+    runner.alg = SimpleNamespace(actor=actor)
     if runner_type is OffPolicyRunner:
         runner.alg.action_delta = torch.ones(2)
         runner.alg.action_offset = torch.zeros(2)
@@ -44,11 +40,6 @@ def _runner_without_noise(runner_type):
 
 def test_on_policy_inference_does_not_add_observation_noise():
     runner, clean_observation = _runner_without_noise(OnPolicyRunner)
-    torch.testing.assert_close(runner.get_inference_actions(), clean_observation)
-
-
-def test_old_policy_inference_does_not_add_observation_noise():
-    runner, clean_observation = _runner_without_noise(OldPolicyRunner)
     torch.testing.assert_close(runner.get_inference_actions(), clean_observation)
 
 

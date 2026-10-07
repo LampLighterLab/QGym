@@ -338,9 +338,11 @@ def source_provenance():
         "worktree": subprocess.check_output(
             ["git", "status", "--short"], cwd=ROOT, text=True
         ),
+        # Cached paths include unstaged deletions, which the worktree status records.
         "sha256": {
             path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
             for path in sorted(paths)
+            if (ROOT / path).is_file()
         },
     }
 

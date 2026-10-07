@@ -266,7 +266,6 @@ class HumanoidRunningRunnerCfg(LeggedRobotRunnerCfg):
         pass
 
     class runner(LeggedRobotRunnerCfg.runner):
-        policy_class_name = "ActorCritic"
         algorithm_class_name = "PPO2"
         max_iterations = 1000
         run_name = "HumanoidRunning"

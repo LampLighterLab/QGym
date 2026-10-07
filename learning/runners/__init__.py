@@ -34,7 +34,6 @@ from .custom_critic_runner import CustomCriticRunner
 from .datalogging_runner import DataLoggingRunner
 from .my_runner import MyRunner
 from .off_policy_runner import OffPolicyRunner
-from .old_policy_runner import OldPolicyRunner
 from .on_policy_runner import OnPolicyRunner
 from .psd_sac_runner import PSACRunner
 
@@ -45,7 +44,6 @@ RUNNER_CLASSES = {
         DataLoggingRunner,
         MyRunner,
         OffPolicyRunner,
-        OldPolicyRunner,
         OnPolicyRunner,
         PSACRunner,
     )
@@ -65,7 +63,6 @@ __all__ = [
     "DataLoggingRunner",
     "MyRunner",
     "OffPolicyRunner",
-    "OldPolicyRunner",
     "OnPolicyRunner",
     "PSACRunner",
     "RUNNER_CLASSES",

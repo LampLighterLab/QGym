@@ -119,7 +119,6 @@ class CartpoleRunnerCfg(FixedRobotCfgPPO):
         pass
 
     class runner(FixedRobotCfgPPO.runner):
-        policy_class_name = "ActorCritic"
         algorithm_class_name = "PPO2"
         max_iterations = 500  # number of policy updates
 

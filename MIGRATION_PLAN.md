@@ -797,7 +797,7 @@ pass:
 
 Aggregate reward or a viewer impression alone is not promotion evidence.
 
-## Planned learning-stack pruning
+## Learning-stack pruning
 
 The learning package currently mixes the supported PPO path with configured
 research paths and code that no registered task can select. Pruning must follow
@@ -812,7 +812,6 @@ checkpoint alone does not make a path supported.
 | Configured research | `OffPolicyRunner` → `SAC` → `ChimeraActor` + `Critic` → `ReplayBuffer` | `sac_pendulum`, `sac_mini_cheetah` |
 | Configured research | `PSACRunner` → `SAC` → `ChimeraActor` + `DenseSpectralLatent` → `ReplayBuffer` | `psd_pendulum` |
 | Unconfigured | `CustomCriticRunner`, `MyRunner`, `DataLoggingRunner` | Exported by `learning.runners`, but selected by no registered task |
-| Legacy | `OldPolicyRunner` → deprecated `PPO` → `ActorCritic` → `RolloutStorage` | No registered task |
 | Orphaned | `StateEstimator` → `StateEstimatorNN` → `SERolloutStorage` | No registered task |
 | Partially reachable | Other classes in `QRCritics.py` | Only `DenseSpectralLatent` is selected by a registered task |
 
@@ -820,6 +819,28 @@ Environment-agnostic utilities are not removal candidates merely because a
 runner does not call them. Keep normalization, logging, dictionary utilities,
 and the colocated PBRS implementation/tutorial unless their own behavior or
 tests show that they are obsolete.
+
+### First pruning slice
+
+Removed the unconfigured legacy chain `OldPolicyRunner` → `PPO` →
+`ActorCritic` → `RolloutStorage`, including its package exports, selectable
+registry names, and old-runner-only inference test. Repository references
+confirmed that this chain had no registered task or retained runner consumer.
+The unused `policy_class_name` config fields were also removed; current runners
+construct actor and critic modules directly. `PPO2` retains its public name,
+training behavior, and checkpoint format. SAC/PSD-SAC and the other pruning
+candidates remain in the inventory above.
+
+The pendulum regression's source manifest now hashes existing worktree files
+while retaining tracked deletions in its recorded Git status. This allows its
+train/save/resume smoke to run during pruning before deletions are staged.
+
+Validation for this slice: the portable suite, both colocated suites, Ruff,
+and source/wheel builds pass. The portable gate includes registered task
+construction and the real CPU PPO2 train/evaluate/checkpoint/resume smoke;
+the built wheel excludes the four removed modules. These checks establish
+retained execution behavior, not learning quality or optional GPU-backend
+coverage.
 
 ### Pruning sequence
 
@@ -832,11 +853,10 @@ tests show that they are obsolete.
    checkpoint, resumes it, and produces finite deterministic inference. Keep
    and test a chain only if that evidence passes and the feature is still
    wanted; otherwise unregister its tasks and configs before deleting it.
-3. Remove the definitely unreachable chains in separate reviewable changes:
-   first `OldPolicyRunner`/`PPO`/`ActorCritic`/`RolloutStorage`, then the state
-   estimator chain, then the three unconfigured runner variants. Update package
-   exports and delete tests that exist only for a removed path in the same
-   change.
+3. After the first legacy PPO removal, remove the remaining unreachable chains
+   in separate reviewable changes: the state estimator chain, then the three
+   unconfigured runner variants. Update package exports and delete tests that
+   exist only for a removed path in the same change.
 4. After the SAC/PSD decision, reduce `QRCritics.py` to retained classes and
    their demonstrated dependencies. If PSD-SAC stays, give its selected critic
    focused math and checkpoint tests rather than preserving every historical

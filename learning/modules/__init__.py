@@ -30,7 +30,6 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-from .actor_critic import ActorCritic
 from .actor import Actor
 from .chimera_actor import ChimeraActor
 from .critic import Critic
@@ -69,7 +68,6 @@ def get_critic_class(name):
 
 __all__ = [
     "Actor",
-    "ActorCritic",
     "CRITIC_CLASSES",
     "ChimeraActor",
     "CholeskyInput",

@@ -257,7 +257,6 @@ class LeggedRobotRunnerCfg(BaseConfig):
         lr_ratio = 1.5
 
     class runner:
-        policy_class_name = "ActorCritic"
         algorithm_class_name = "PPO2"
         max_iterations = 1500
         save_interval = 50

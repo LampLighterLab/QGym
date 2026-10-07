@@ -156,7 +156,6 @@ class FixedRobotCfgPPO(BaseConfig):
         desired_kl = 0.01
 
     class runner:
-        policy_class_name = "ActorCritic"
         algorithm_class_name = "PPO2"
         max_iterations = 500  # number of policy updates
 
