@@ -54,11 +54,11 @@ class Pendulum(FixedRobot):
         return self._sqrdexp(omega_rwd)
 
     def _reward_equilibrium(self):
-        # todo compare alternatives
-        error = torch.abs(self.dof_state)
-        error[:, 0] /= self.scales["dof_pos"]
-        error[:, 1] /= self.scales["dof_vel"]
-        return self._sqrdexp(torch.mean(error, dim=1), sigma=0.01)
+        # Observations are periodic, so equivalent upright angles must earn
+        # the same reward after a swing crosses a full revolution.
+        angle_error = self._normalize_theta().abs() / self.scales["dof_pos"]
+        velocity_error = self.dof_vel[:, 0].abs() / self.scales["dof_vel"]
+        return self._sqrdexp((angle_error + velocity_error) / 2, sigma=0.01)
 
     def _reward_torques(self):
         """Penalize torques"""

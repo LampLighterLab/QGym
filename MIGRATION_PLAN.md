@@ -124,6 +124,85 @@ separate Go2 DR campaign evidence. Simulation speed calibration and Warp/VSim
 host/CUDA profiling proceed independently; broad learner refactoring waits for
 a meaningful physical learning gate.
 
+## Pendulum algorithm validation (2026-10-07)
+
+Current control-learning implementations and their pendulum coverage:
+
+| Algorithm / variant | Registered task and runner | Pendulum learning evidence |
+|---|---|---|
+| `PPO2` | `pendulum` / `OnPolicyRunner` | CPU swing-up and stabilization validated below |
+| `SAC` | `sac_pendulum` / `OffPolicyRunner` | Next validation target; its separate action, frequency, and reward config still needs review |
+| SAC with PSD critic | `psd_pendulum` / `PSACRunner` / `DenseSpectralLatent` | Pending; shares the SAC update algorithm |
+| `StateEstimator` | No registered task | Supervised state estimation, not a pendulum controller |
+
+The PPO2 tuning followed scaling, initialization, reward weights, then
+hyperparameters. All CPU comparisons used the user's 25 Hz control / 50 Hz
+simulation settings, 256 environments, 4,096 samples per update (16 steps per
+environment, or 0.64 s), full-rollout optimizer batches, 24 gradient steps,
+and 200 updates. This is a separate profile from the failed 100 Hz calibration
+above; those earlier results remain failed evidence. W&B was disabled, and
+PyTorch used one CPU thread per process.
+
+Evaluation uses deterministic actions for 15 s, requiring `abs(wrapped_angle)
+< 0.14 rad` and `abs(angular_velocity) < 0.5 rad/s` throughout the final 2 s.
+The fixed suite contains a 17x17 angle/velocity grid over `[-pi, pi] x [-5, 5]`,
+17 hanging starts at `pi +/- 0.1 rad` with zero velocity, and 17 near-upright
+starts in `[-0.2, 0.2] rad` with zero velocity. Final checkpoint 200 is the
+reported checkpoint; intermediate evaluations were diagnostic only.
+
+Sequential seed-7 comparisons held initial network weights and rollout
+geometry constant. Each row includes preceding changes:
+
+| Change | Grid success at update 200 | Hanging success | Finding |
+|---|---:|---:|---|
+| Original rewards/scales, reduced CPU sample count | 14.9% | 0% | Learns to settle downward |
+| Action scale 1 → 5 Nm; explicit sin/cos scale 1 | 18.0% | 0% | Initial torque clipping rises to 32.0% |
+| Initial action standard deviation 1 → 0.5 | 24.9% | 0% | Initial clipping falls to 4.9%; scaling/init alone do not solve swing-up |
+| Velocity penalty weight 0.1 → 0.001 | 0% | 0% | Swings up, but final equilibrium is biased by 0.150 rad; earlier checkpoints passed and are not substituted for the final one |
+| Periodic equilibrium reward | 100% | 100% | Equivalent angles at 0 and 2pi now earn equal reward; updates 50/100/150/200 all pass |
+| Adaptive actor LR ceiling 0.01 → 0.001 | 100% | 100% | Avoids the original first-update 100x learning-rate rise |
+
+Observed scaled velocities initially span approximately [-1.40, 1.37] at the
+1st/99th percentiles; sin/cos already lie within [-1, 1]. Network architecture,
+weight initialization, uniform reset ranges, gamma=0.95, lambda=0.98, and
+entropy weight remain unchanged. At swing-up energy near the bottom, the old
+velocity term contributes about -3.82 versus +0.49 from the energy term.
+Reducing that penalty permits the energy-building phase. Separately, the old
+equilibrium reward used unwrapped angle despite periodic observations; its
+full-revolution invariance now has focused regression coverage. An analytic
+swing-up controller catches all 81 starts of a smaller reference grid at
+these same physics/control settings.
+
+The final settings were also trained through the ordinary `train.setup` /
+`OnPolicyRunner.learn` initialization path, without replacing the initial
+weights or reseeding the environment after construction:
+
+| Seed | Grid / hanging / near-upright success | Final angle RMSE | Mean catch time |
+|---|---|---:|---:|
+| 7 | 100% / 100% / 100% | 0.0104 rad | 1.81 s |
+| 17 | 100% / 100% / 100% | 0.0226 rad | 1.73 s |
+| 27 | 100% / 100% / 100% | 0.0073 rad | 1.82 s |
+
+All three runs pass every diagnostic checkpoint from update 50 onward.
+Each final run collects 819,200 transitions; the pendulum config now declares
+the tested 256-environment/4,096-sample geometry explicitly. This evidence is
+for MuJoCo CPU and these three seeds; it does not establish SAC/PSD-SAC or
+Warp/VSim learning quality. The periodic reward fix also applies to SAC tasks,
+whose separate reward weights and checkpoint handling still need validation.
+
+Artifacts remain gitignored under `logs/pendulum_tuning/`: per-run resolved
+configs, source snapshots, checkpoints, evaluation trajectories, reward-term
+distributions, and rollout mean/std/quantiles for observations, actions,
+rewards, and returns. `task_config_seed{7,17,27}/summary.json` and
+`validation_summary.json` contain the final scores. `learning_comparison.png`
+shows the ablations; `policy_distributions.png` shows validation trajectories,
+torque histograms, final angles, and weighted reward contributions. The local
+`probe.py` and `plot_results.py` retain the experiment and plotting commands.
+
+Validation: focused reward-invariance and pendulum training/resume tests,
+the portable and both colocated suites, and Ruff pass. No PPO2 update math,
+normalizer implementation, or physics backend was changed.
+
 ## Rebase verification (2026-09-08)
 
 Compared `cdx_freeze` with `cdx` and restored the reference Warp step,

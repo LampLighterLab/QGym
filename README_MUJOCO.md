@@ -349,6 +349,24 @@ bash scripts/run_vsim_tests.sh -k vsim_domain_randomization_regression
 
 ### Simulation and learning regression tools
 
+The default PPO2 pendulum config uses 256 environments, 25 Hz control / 50 Hz
+physics, and 4,096 rollout samples per update. To reproduce the CPU swing-up
+training profile with one PyTorch thread:
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 uv run --frozen scripts/train.py \
+    --task pendulum --backend mujoco --device cpu --seed 7 \
+    --headless --disable_wandb
+```
+
+Seeds 7, 17, and 27 pass the fixed 323-start swing-up/stabilization suite after
+200 updates, holding angle below 0.14 rad and speed below 0.5 rad/s for the final
+two seconds of each 15-second deterministic evaluation. See
+[the algorithm inventory and tuning evidence](MIGRATION_PLAN.md#pendulum-algorithm-validation-2026-10-07)
+for the distributions, failed comparisons, and scope of this result. The
+100 Hz calibration worker below uses its own frequency and discount profile;
+its results should not be treated as a run of these task defaults.
+
 The [streamlining plan](STREAMLINING_PLAN.md) defines the calibration and
 acceptance protocol. The simulation worker fixes control and physics at 100 Hz,
 warms the selected path, restores state between batches, and saves timings and
