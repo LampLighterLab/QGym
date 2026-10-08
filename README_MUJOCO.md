@@ -367,6 +367,26 @@ for the distributions, failed comparisons, and scope of this result. The
 100 Hz calibration worker below uses its own frequency and discount profile;
 its results should not be treated as a run of these task defaults.
 
+SAC uses the same pendulum physics, reset distribution, observations, and reward
+weights, with its own replay and optimizer settings:
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 uv run --frozen scripts/train.py \
+    --task sac_pendulum --backend mujoco --device cpu --seed 7 \
+    --headless --disable_wandb
+```
+
+Its default 16 environments collect 16 new transitions per update, followed by
+16 optimizer steps with 256-sample replay batches. The 1,500-update profile
+collects 25,024 transitions including uniform-action warmup. Seeds 7, 17, and 27
+all pass the same 323-start swing-up/stabilization suite at that checkpoint.
+Keep the default environment count when reproducing this update/sample ratio.
+Source references,
+physical evaluation, and earlier unsuccessful settings are recorded in
+[the SAC validation notes](MIGRATION_PLAN.md#sac-with-the-same-physical-task-and-rewards).
+SAC resume restores models, target critics, temperature, and optimizer state;
+the replay buffer is rebuilt on resume.
+
 The [streamlining plan](STREAMLINING_PLAN.md) defines the calibration and
 acceptance protocol. The simulation worker fixes control and physics at 100 Hz,
 warms the selected path, restores state between batches, and saves timings and

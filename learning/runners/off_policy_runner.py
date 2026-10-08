@@ -64,6 +64,7 @@ class OffPolicyRunner(BaseRunner):
                 "next_critic_obs": critic_obs,
                 "rewards": self.get_rewards({"termination": 0.0})["termination"],
                 "dones": self.get_timed_out(),
+                "timed_out": self.env.timed_out,
             }
         )
         storage.initialize(
@@ -74,9 +75,13 @@ class OffPolicyRunner(BaseRunner):
         )
 
         # fill buffer
-        for _ in range(self.alg_cfg["initial_fill"]):
+        for fill_step in range(self.alg_cfg["initial_fill"]):
             with torch.inference_mode():
-                actions = torch.rand_like(actions) * 2 - 1
+                actions = (
+                    torch.rand_like(actions)
+                    * (self.alg.action_max - self.alg.action_min)
+                    + self.alg.action_min
+                )
                 self.set_actions(
                     self.actor_cfg["actions"],
                     actions,
@@ -94,34 +99,14 @@ class OffPolicyRunner(BaseRunner):
                     self.env.step()
                     # put reward integration here
                     self.update_rewards_dict(rewards_dict, step)
-                else:
-                    # catch and reset failed envs
-                    self.reset_envs()
-
-                total_rewards = torch.stack(
-                    tuple(rewards_dict.sum(dim=0).values())
-                ).sum(dim=(0))
-
-                actor_obs = self.get_noisy_obs(
-                    self.actor_cfg["obs"], self.actor_cfg["noise"]
+                actor_obs, critic_obs, _ = self._store_transition(
+                    transition, rewards_dict
                 )
-                critic_obs = self.get_obs(self.critic_cfg["obs"])
-
-                transition.update(
-                    {
-                        "next_actor_obs": actor_obs,
-                        "next_critic_obs": critic_obs,
-                        "rewards": total_rewards,
-                        "timed_out": self.env.timed_out,
-                        "dones": self.env.timed_out | self.env.terminated,
-                    }
-                )
-                storage.add_transitions(transition)
                 # print every 10% of initial fill
                 if (self.alg_cfg["initial_fill"] > 10) and (
-                    _ % (self.alg_cfg["initial_fill"] // 10) == 0
+                    fill_step % (self.alg_cfg["initial_fill"] // 10) == 0
                 ):
-                    print(f"Filled {100 * _ / self.alg_cfg['initial_fill']}%")
+                    print(f"Filled {100 * fill_step / self.alg_cfg['initial_fill']}%")
 
         logger.tic("runtime")
         for self.it in range(self.it + 1, tot_iter + 1):
@@ -149,29 +134,9 @@ class OffPolicyRunner(BaseRunner):
                         self.env.step()
                         # put reward integration here
                         self.update_rewards_dict(rewards_dict, step)
-                    else:
-                        # catch and reset failed envs
-                        self.reset_envs()
-
-                    total_rewards = torch.stack(
-                        tuple(rewards_dict.sum(dim=0).values())
-                    ).sum(dim=(0))
-
-                    actor_obs = self.get_noisy_obs(
-                        self.actor_cfg["obs"], self.actor_cfg["noise"]
+                    actor_obs, critic_obs, total_rewards = self._store_transition(
+                        transition, rewards_dict
                     )
-                    critic_obs = self.get_obs(self.critic_cfg["obs"])
-
-                    transition.update(
-                        {
-                            "next_actor_obs": actor_obs,
-                            "next_critic_obs": critic_obs,
-                            "rewards": total_rewards,
-                            "timed_out": self.env.timed_out,
-                            "dones": self.env.timed_out | self.env.terminated,
-                        }
-                    )
-                    storage.add_transitions(transition)
 
                     logger.log_rewards(rewards_dict.sum(dim=0))
                     logger.log_rewards({"total_rewards": total_rewards})
@@ -192,13 +157,35 @@ class OffPolicyRunner(BaseRunner):
                 self.save()
         self.save()
 
+    def _store_transition(self, transition, rewards_dict):
+        total_rewards = torch.stack(tuple(rewards_dict.sum(dim=0).values())).sum(0)
+        noise = self.get_noise(self.actor_cfg["obs"], self.actor_cfg["noise"])
+        # A time limit truncates collection, not the underlying physical task.
+        # Bootstrap from the final physical observation, never the reset state.
+        transition.update(
+            {
+                "next_actor_obs": self.get_obs(self.actor_cfg["obs"]) + noise,
+                "next_critic_obs": self.get_obs(self.critic_cfg["obs"]),
+                "rewards": total_rewards,
+                "timed_out": self.env.timed_out,
+                "dones": self.env.terminated & ~self.env.timed_out,
+            }
+        )
+        storage.add_transitions(transition)
+        self.reset_envs()
+        # Surviving environments reuse the next-observation noise. Reset
+        # environments instead start their next transition from the new state.
+        actor_obs = self.get_obs(self.actor_cfg["obs"]) + noise
+        critic_obs = self.get_obs(self.critic_cfg["obs"])
+        return actor_obs, critic_obs, total_rewards
+
     def update_rewards_dict(self, rewards_dict, step):
-        # sum existing rewards with new rewards
+        terminated = self.env.terminated & ~self.env.timed_out
         rewards_dict[step].update(
             self.get_rewards(
                 self.critic_cfg["reward"]["termination_weight"],
                 modifier=self.env.dt,
-                mask=self.env.terminated,
+                mask=terminated,
             ),
             inplace=True,
         )
@@ -206,7 +193,7 @@ class OffPolicyRunner(BaseRunner):
             self.get_rewards(
                 self.critic_cfg["reward"]["weights"],
                 modifier=self.env.dt,
-                mask=~self.env.terminated,
+                mask=~terminated,
             ),
             inplace=True,
         )
@@ -230,7 +217,11 @@ class OffPolicyRunner(BaseRunner):
         if dt is None:
             dt = self.env.dt
         logger.initialize(
-            self.env.num_envs, dt, self.cfg["max_iterations"], self.device
+            self.env.num_envs,
+            dt,
+            self.cfg["max_iterations"],
+            self.device,
+            log_dir=self.log_dir,
         )
 
         logger.register_rewards(list(self.critic_cfg["reward"]["weights"].keys()))
@@ -266,6 +257,8 @@ class OffPolicyRunner(BaseRunner):
             "actor_state_dict": self.alg.actor.state_dict(),
             "critic_1_state_dict": self.alg.critic_1.state_dict(),
             "critic_2_state_dict": self.alg.critic_2.state_dict(),
+            "target_critic_1_state_dict": self.alg.target_critic_1.state_dict(),
+            "target_critic_2_state_dict": self.alg.target_critic_2.state_dict(),
             "log_alpha": self.alg.log_alpha,
             "actor_optimizer_state_dict": self.alg.actor_optimizer.state_dict(),
             "critic_1_optimizer_state_dict": self.alg.critic_1_optimizer.state_dict(),
@@ -276,12 +269,21 @@ class OffPolicyRunner(BaseRunner):
         torch.save(save_dict, path)
 
     def load(self, path, load_optimizer=True):
-        loaded_dict = torch.load(path, weights_only=True)
+        loaded_dict = torch.load(path, map_location=self.device, weights_only=True)
         self.alg.actor.load_state_dict(loaded_dict["actor_state_dict"])
         self.alg.critic_1.load_state_dict(loaded_dict["critic_1_state_dict"])
         self.alg.critic_2.load_state_dict(loaded_dict["critic_2_state_dict"])
-        self.log_alpha = loaded_dict["log_alpha"]
+        # Keep the tensor owned by the entropy optimizer; replacing it would
+        # leave that optimizer updating an unused parameter.
+        with torch.no_grad():
+            self.alg.log_alpha.copy_(loaded_dict["log_alpha"])
         if load_optimizer:
+            self.alg.target_critic_1.load_state_dict(
+                loaded_dict["target_critic_1_state_dict"]
+            )
+            self.alg.target_critic_2.load_state_dict(
+                loaded_dict["target_critic_2_state_dict"]
+            )
             self.alg.actor_optimizer.load_state_dict(
                 loaded_dict["actor_optimizer_state_dict"]
             )

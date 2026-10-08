@@ -131,7 +131,7 @@ Current control-learning implementations and their pendulum coverage:
 | Algorithm / variant | Registered task and runner | Pendulum learning evidence |
 |---|---|---|
 | `PPO2` | `pendulum` / `OnPolicyRunner` | CPU swing-up and stabilization validated below |
-| `SAC` | `sac_pendulum` / `OffPolicyRunner` | Next validation target; its separate action, frequency, and reward config still needs review |
+| `SAC` | `sac_pendulum` / `OffPolicyRunner` | CPU swing-up/stabilization validated below with PPO2's physical task and rewards |
 | SAC with PSD critic | `psd_pendulum` / `PSACRunner` / `DenseSpectralLatent` | Pending; shares the SAC update algorithm |
 | `StateEstimator` | No registered task | Supervised state estimation, not a pendulum controller |
 
@@ -186,9 +186,9 @@ weights or reseeding the environment after construction:
 All three runs pass every diagnostic checkpoint from update 50 onward.
 Each final run collects 819,200 transitions; the pendulum config now declares
 the tested 256-environment/4,096-sample geometry explicitly. This evidence is
-for MuJoCo CPU and these three seeds; it does not establish SAC/PSD-SAC or
-Warp/VSim learning quality. The periodic reward fix also applies to SAC tasks,
-whose separate reward weights and checkpoint handling still need validation.
+for PPO2 on MuJoCo CPU and these three seeds; it does not establish PSD-SAC or
+Warp/VSim learning quality. SAC's subsequent validation is recorded separately
+below.
 
 Artifacts remain gitignored under `logs/pendulum_tuning/`: per-run resolved
 configs, source snapshots, checkpoints, evaluation trajectories, reward-term
@@ -202,6 +202,136 @@ torque histograms, final angles, and weighted reward contributions. The local
 Validation: focused reward-invariance and pendulum training/resume tests,
 the portable and both colocated suites, and Ruff pass. No PPO2 update math,
 normalizer implementation, or physics backend was changed.
+
+### SAC with the same physical task and rewards
+
+`PendulumSACCfg` inherits PPO2's physical settings, scales, reset distribution,
+and 10-second time limit. Observations, observation noise, and reward methods
+and weights remain shared. Both act at 25 Hz with 50 Hz physics, observe
+`[sin(theta), cos(theta), omega/5]`, and can apply +/-5 Nm. Environment population
+and learner settings are SAC-specific; copying PPO2's optimizer geometry was
+not an appropriate sample-efficiency comparison.
+
+Reference settings were checked against primary implementations and results:
+
+- [RL Zoo's published SAC Pendulum-v1 agent](https://huggingface.co/sb3/sac-Pendulum-v1)
+  reports a 20,000-transition training budget and learning rate 1e-3. The
+  [maintained configuration](https://github.com/DLR-RM/rl-baselines3-zoo/blob/master/hyperparams/sac.yml)
+  retains those settings. That pendulum has different physics/rewards; its
+  reported score is not this project's physical acceptance criterion.
+- [Stable Baselines3 SAC](https://stable-baselines3.readthedocs.io/en/master/modules/sac.html)
+  uses 256-sample minibatches, gamma 0.99, tau 0.005, and automatic entropy
+  tuning. Its [policy implementation](https://stable-baselines3.readthedocs.io/en/master/_modules/stable_baselines3/sac/policies.html)
+  uses 256/256 ReLU networks by default.
+- [Spinning Up SAC](https://spinningup.openai.com/en/latest/algorithms/sac.html)
+  explicitly maintains one optimizer update per new transition. The
+  [SAC algorithms and applications paper, Appendix D](https://arxiv.org/pdf/1812.05905)
+  also specifies 256-sample batches, 256/256 ReLU networks, gamma 0.99,
+  target updates every gradient step, and tau 0.005; its general learning
+  rate is 3e-4.
+
+The reference-informed Q2 profile collects one transition from each of 16
+parallel environments, then performs 16 optimizer steps with 256-sample replay
+batches. It uses a one-million-transition replay capacity, 1,024 uniform-action
+warmup transitions, gamma 0.99, Polyak retention 0.995, learning rates 1e-3,
+and target entropy -1. Initial temperature 0.01 is adapted to Q2's dt-integrated
+reward scale. The actor uses the existing `ChimeraActor` with two shared 256-unit
+ReLU layers, its linear latent projection, and mean/log-std heads; critics use
+256/256 ReLU networks. Log standard deviation is bounded to [-20, 2]. This is
+an adaptation of the reference settings, not an exact SB3 implementation.
+The selected final checkpoint is update 1,500: 24,000 learned transitions plus
+1,024 warmup transitions, or 25,024 collected samples.
+
+Correctness fixes are separate from that configuration:
+
+- The actor's nested dictionaries now use `activations`; the former
+  `activation` key was silently ignored by `create_MLP`.
+- Target critics update after every gradient step, rather than once after an
+  entire group of optimizer steps. With the original aligned profile and
+  seed 7, restoring the old cadence yields 0/323 successful starts versus
+  323/323 with the fix, at identical sample/update budgets.
+- SAC preserves the final physical observation before reset and bootstraps
+  across time limits. True failures remain terminal. Time-limit transitions
+  retain their ordinary reward instead of being routed through failure reward
+  masking. A regression covers pre-reset versus reset state and both end types.
+- Checkpoints save target critics and restore temperature in place, preserving
+  the optimizer's parameter reference. Temperature is created on the requested
+  device, warmup respects action bounds, and local vitals are recorded.
+
+Replay contents and RNG state are not checkpointed: resume rebuilds replay,
+so it is not an exact continuation of sampling. Older SAC checkpoints lacking
+saved target critics remain usable for inference but cannot fully resume.
+The unit regression verifies identical next optimizer updates when a checkpoint
+is given the same replay data and RNG state.
+
+The same 323-start physical suite as PPO2 is used: deterministic actions for
+15 s, with angle below 0.14 rad and speed below 0.5 rad/s throughout the final
+2 s. Evaluation runs at the training policy frequency and uses clean
+observations. Final checkpoints are chosen before evaluating the runs.
+
+Earlier comparisons remain visible; none changes task physics or reward weights:
+
+| Profile | Samples | Successful starts, seeds 7 / 17 / 27 | Finding |
+|---|---:|---|---|
+| PPO2-style collection/batches, SAC LR 1e-4 | 819,200 | 323 / 322 / 311 | Only 24 optimizer updates per 4,096 new samples; hanging swing-up can be slow |
+| Same, actor/critic LR 3e-4 | 819,200 | 261 / 259 / 259 | Rejected; all hanging starts fail |
+| Same baseline, initial alpha 0.001 | 819,200 | 0 / 246 / 323 | Rejected; substantially more squash saturation and inconsistent learning |
+| Same baseline, initial std 0.65 | 819,200 | 319 / 319 / 318 | Matches initial physical torque spread more closely, but does not solve reliability |
+| Baseline extended to update 400 | 1,638,400 | 323 / 323 / 323 | Works, but inefficient learner geometry remains |
+| Reference-informed profile, before timeout correction | 25,024 | 323 / 323 / 0 | Seed 27 stabilizes at 0.239 rad, outside the physical gate |
+
+The reference-informed profile already passed all starts at 9,024 samples for
+seed 7, but that run temporarily regressed to a 0.149-rad equilibrium at
+17,024 samples. Intermediate success does not replace the preselected final
+checkpoint or establish reliability.
+
+With corrected time-limit handling, all three seeds pass all 323 starts at the
+preselected final checkpoint, using 25,024 samples and the ordinary production
+config and initialization:
+
+| Seed | Grid / hanging / upright success | Final angle RMSE (rad) | Mean catch time (s) | Applied torque near limit |
+|---|---|---:|---:|---:|
+| 7 | 100% / 100% / 100% | 0.0288 | 2.04 | 2.90% |
+| 17 | 100% / 100% / 100% | 0.0552 | 2.10 | 2.73% |
+| 27 | 100% / 100% / 100% | 0.0228 | 1.45 | 3.51% |
+
+All three also pass at the preceding 17,024-sample checkpoint; only seed 7
+passes all starts at 9,024 samples. This establishes learning for these three
+seeds on MuJoCo CPU. Warp, VSim, and PSD-SAC are not covered. The earlier PPO2
+checkpoints used a coarser evaluation schedule, so this is not a measurement
+of either algorithm's minimum sample requirement.
+
+A public-CLI resume of seed 7 from update 1,500 through 1,510 also passes all
+323 starts (final angle RMSE 0.0757 rad). The portable gate passes 330 tests
+with one existing expected failure; colocated gym and learning suites pass
+32 and 7 tests respectively. Ruff passes.
+
+Scaling diagnostics distinguish actuator clipping from tanh saturation.
+On a common 17x17 observation grid with 128 stochastic draws per state, the
+original nominal-std-0.5 comparison gives PPO2 2.37-2.39 Nm applied torque
+standard deviation and 4.5-5.9% hard clipping, versus SAC 1.90-2.04 Nm and
+zero hard clipping. SAC's near-limit fraction (|torque| > 4.9 Nm) rises from
+roughly 3-4% to 14-18% in the rejected low-temperature trials. These fixed-state
+probes are separate from closed-loop trajectory statistics. Initial reference
+exploration instead starts with uniformly sampled bounded actions.
+
+The final policies have zero hard actuator clipping. Their deterministic
+evaluation trajectories spend 2.7-3.5% of samples above 4.9 Nm in magnitude.
+On the broad fixed-state stochastic probe, the same policies instead have
+49-57% near-limit actions: strong actions far from the goal are compatible
+with successful swing-up. Saturation alone does not diagnose a bad policy.
+
+Artifacts remain gitignored under `logs/sac_pendulum_validation/`: resolved
+configs, source snapshots, checkpoints, per-term vitals, rollout observation /
+action / pre-squash / Q statistics, and full evaluation trajectories. The local
+`probe.py`, `evaluate_saved.py`, and plotting scripts retain the experiment
+recipes. `action_scaling.json` records command/applied torque quantiles,
+clipping, near-limit fraction, and the squash derivative; `action_scaling.png`
+visualizes the initial comparison and rejected temperature trial.
+`timeouts_distributions.png` shows the final learning curves, hanging-start
+trajectories, torque distributions, final angles, and per-term rewards.
+`validation_summary.json` records the final profile, all three seeds, and the
+resume check; the corresponding raw trials are in `timeouts_seed{7,17,27}/`.
 
 ## Rebase verification (2026-09-08)
 

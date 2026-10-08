@@ -43,7 +43,7 @@ class SAC:
         self.target_critic_1.load_state_dict(self.critic_1.state_dict())
         self.target_critic_2.load_state_dict(self.critic_2.state_dict())
 
-        self.log_alpha = torch.log(torch.tensor(alpha)).requires_grad_()
+        self.log_alpha = torch.tensor(alpha, device=self.device).log().requires_grad_()
 
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.log_alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)
@@ -59,7 +59,7 @@ class SAC:
 
         self.max_grad_norm = max_grad_norm
         self.target_entropy = (
-            target_entropy if target_entropy else -self.actor.num_actions
+            -self.actor.num_actions if target_entropy is None else target_entropy
         )
 
         # * SAC parameters
@@ -140,14 +140,11 @@ class SAC:
             self.update_critic(batch)
             self.update_actor_and_alpha(batch)
 
+            # Polyak's time scale is optimizer steps, independent of how many
+            # minibatches the runner groups into a collection/update cycle.
+            polyak_update(self.critic_1, self.target_critic_1, self.polyak)
+            polyak_update(self.critic_2, self.target_critic_2, self.polyak)
             count += 1
-        # Update Target Networks
-        self.target_critic_1 = polyak_update(
-            self.critic_1, self.target_critic_1, self.polyak
-        )
-        self.target_critic_2 = polyak_update(
-            self.critic_2, self.target_critic_2, self.polyak
-        )
         self.mean_actor_loss /= count
         self.mean_alpha_loss /= count
         self.mean_critic_1_loss /= count
