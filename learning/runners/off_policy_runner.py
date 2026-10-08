@@ -99,9 +99,28 @@ class OffPolicyRunner(BaseRunner):
                     self.env.step()
                     # put reward integration here
                     self.update_rewards_dict(rewards_dict, step)
-                actor_obs, critic_obs, _ = self._store_transition(
-                    transition, rewards_dict
+                total_rewards = torch.stack(
+                    tuple(rewards_dict.sum(dim=0).values())
+                ).sum(0)
+                noise = self.get_noise(self.actor_cfg["obs"], self.actor_cfg["noise"])
+                # Replay retains the final physical observations before reset.
+                next_actor_obs = self.get_obs(self.actor_cfg["obs"]) + noise
+                next_critic_obs = self.get_obs(self.critic_cfg["obs"])
+                transition.update(
+                    {
+                        "next_actor_obs": next_actor_obs,
+                        "next_critic_obs": next_critic_obs,
+                        "rewards": total_rewards,
+                        "timed_out": self.env.timed_out,
+                        "dones": self.env.terminated & ~self.env.timed_out,
+                    }
                 )
+                storage.add_transitions(transition)
+
+                self.reset_envs()
+                # Reuse observation noise for surviving environments.
+                actor_obs = self.get_obs(self.actor_cfg["obs"]) + noise
+                critic_obs = self.get_obs(self.critic_cfg["obs"])
                 # print every 10% of initial fill
                 if (self.alg_cfg["initial_fill"] > 10) and (
                     fill_step % (self.alg_cfg["initial_fill"] // 10) == 0
@@ -134,9 +153,31 @@ class OffPolicyRunner(BaseRunner):
                         self.env.step()
                         # put reward integration here
                         self.update_rewards_dict(rewards_dict, step)
-                    actor_obs, critic_obs, total_rewards = self._store_transition(
-                        transition, rewards_dict
+                    total_rewards = torch.stack(
+                        tuple(rewards_dict.sum(dim=0).values())
+                    ).sum(0)
+                    noise = self.get_noise(
+                        self.actor_cfg["obs"], self.actor_cfg["noise"]
                     )
+                    # Time limits bootstrap from the physical successor,
+                    # before the environment is reset.
+                    next_actor_obs = self.get_obs(self.actor_cfg["obs"]) + noise
+                    next_critic_obs = self.get_obs(self.critic_cfg["obs"])
+                    transition.update(
+                        {
+                            "next_actor_obs": next_actor_obs,
+                            "next_critic_obs": next_critic_obs,
+                            "rewards": total_rewards,
+                            "timed_out": self.env.timed_out,
+                            "dones": self.env.terminated & ~self.env.timed_out,
+                        }
+                    )
+                    storage.add_transitions(transition)
+
+                    self.reset_envs()
+                    # Reuse observation noise for surviving environments.
+                    actor_obs = self.get_obs(self.actor_cfg["obs"]) + noise
+                    critic_obs = self.get_obs(self.critic_cfg["obs"])
 
                     logger.log_rewards(rewards_dict.sum(dim=0))
                     logger.log_rewards({"total_rewards": total_rewards})
@@ -156,28 +197,6 @@ class OffPolicyRunner(BaseRunner):
             if self.it % self.save_interval == 0:
                 self.save()
         self.save()
-
-    def _store_transition(self, transition, rewards_dict):
-        total_rewards = torch.stack(tuple(rewards_dict.sum(dim=0).values())).sum(0)
-        noise = self.get_noise(self.actor_cfg["obs"], self.actor_cfg["noise"])
-        # A time limit truncates collection, not the underlying physical task.
-        # Bootstrap from the final physical observation, never the reset state.
-        transition.update(
-            {
-                "next_actor_obs": self.get_obs(self.actor_cfg["obs"]) + noise,
-                "next_critic_obs": self.get_obs(self.critic_cfg["obs"]),
-                "rewards": total_rewards,
-                "timed_out": self.env.timed_out,
-                "dones": self.env.terminated & ~self.env.timed_out,
-            }
-        )
-        storage.add_transitions(transition)
-        self.reset_envs()
-        # Surviving environments reuse the next-observation noise. Reset
-        # environments instead start their next transition from the new state.
-        actor_obs = self.get_obs(self.actor_cfg["obs"]) + noise
-        critic_obs = self.get_obs(self.critic_cfg["obs"])
-        return actor_obs, critic_obs, total_rewards
 
     def update_rewards_dict(self, rewards_dict, step):
         terminated = self.env.terminated & ~self.env.timed_out

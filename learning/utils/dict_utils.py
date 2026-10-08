@@ -33,27 +33,22 @@ def normalize(input, eps=1e-8):
 
 @torch.no_grad
 def compute_generalized_advantages(data, gamma, lam, critic):
-    last_values = critic.evaluate(data["next_critic_obs"][-1])
+    # Within an uninterrupted trajectory the next stored value is V(s_next).
+    # At a timeout it instead belongs to a reset state, so evaluate the saved
+    # physical successor. The last rollout step also needs an explicit value.
+    next_values = data["values"].roll(-1, dims=0)
+    bootstrap_boundary = data["timed_out"].clone()
+    bootstrap_boundary[-1] = True
+    next_values[bootstrap_boundary] = critic.evaluate(
+        data["next_critic_obs"][bootstrap_boundary]
+    )
+    not_done = ~data["dones"]
+    can_bootstrap = not_done | data["timed_out"]
+    td_errors = data["rewards"] + gamma * next_values * can_bootstrap - data["values"]
     advantages = torch.zeros_like(data["values"])
-    if last_values is not None:
-        # todo check this
-        not_done = ~data["dones"][-1]
-        advantages[-1] = (
-            data["rewards"][-1]
-            + gamma * data["values"][-1] * data["timed_out"][-1]
-            + gamma * last_values * not_done
-            - data["values"][-1]
-        )
-
+    advantages[-1] = td_errors[-1]
     for k in reversed(range(data["values"].shape[0] - 1)):
-        not_done = ~data["dones"][k]
-        td_error = (
-            data["rewards"][k]
-            + gamma * data["values"][k] * data["timed_out"][k]
-            + gamma * data["values"][k + 1] * not_done
-            - data["values"][k]
-        )
-        advantages[k] = td_error + gamma * lam * not_done * advantages[k + 1]
+        advantages[k] = td_errors[k] + gamma * lam * not_done[k] * advantages[k + 1]
 
     return advantages
 

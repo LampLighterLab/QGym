@@ -333,6 +333,159 @@ trajectories, torque distributions, final angles, and per-term rewards.
 `validation_summary.json` records the final profile, all three seeds, and the
 resume check; the corresponding raw trials are in `timeouts_seed{7,17,27}/`.
 
+### Pendulum value calibration and bootstrap sweep (2026-10-08)
+
+This campaign measures absolute critic calibration as well as deterministic
+swing-up. PPO varies GAE lambda (`0`, `0.9`, `0.98`, `1`) and environment count
+(`16`, `64`, `256`, `1024`) at fixed 4,096-sample rollouts, 4,096-sample optimizer
+batches, 24 gradient steps, and 200 updates (819,200 fresh transitions).
+Trajectory fragments are therefore 256, 64, 16, and four policy steps.
+
+SAC does not use GAE; injecting a lambda setting would not change its updates.
+Its environment sweep uses `4`, `16`, `64`, and `256` environments with one
+collected step per environment and one gradient update per fresh transition.
+Warmup is fixed at 1,024 transitions, followed by 24,576 learned transitions.
+The resulting gradient bursts and warmup steps per environment differ with
+population, so this is a data-collection/cadence experiment, not a SAC return-
+horizon sweep. SAC's diagnostic lambda-return estimators are evaluation only.
+
+Both algorithms retain the same pendulum physics, rewards, reset distribution,
+25 Hz control and 50 Hz physics. Their original discounts remain 0.95 (PPO)
+and 0.99 (SAC); raw value magnitudes are not comparable across algorithms.
+Every cell uses seeds 7, 17, and 27. Network construction has an isolated seed
+so environment-count-dependent RNG consumption cannot change initial weights.
+PPO population changes trajectory length, state diversity, and temporal
+correlation together. Defaults are not tuned during the experiment.
+
+The initial audit found a PPO timeout bug: collection saved reset observations
+as successors, the GAE helper bootstrapped time limits from the current state's
+value, and timeout steps lost ordinary reward. Collection now saves the final
+physical successor before reset. Timeouts retain ordinary reward and bootstrap
+from that successor; genuine terminal transitions have no bootstrap. Both kinds
+of episode boundary stop GAE propagation into the next episode. Hand-calculated
+mixed-boundary tests and real pendulum collection tests reproduce the original
+failure and verify the correction. Three additional paired controls execute the
+pre-fix runner/reward/GAE source from commit `ea7dde7`, separately from the sweep.
+
+Physical evaluation uses the same 323 starts and 15-second deterministic run as
+the earlier validations, requiring the final two seconds within 0.14 rad and
+0.5 rad/s. Checkpoints at 25%, 50%, and 100% of each fixed sample budget are
+reported; the final checkpoint is selected in advance for value calibration.
+
+Value probes freeze each final stochastic training policy on 40 common states.
+Each state has 16 independent Monte Carlo reference continuations and 16 separate
+target continuations. PPO references integrate ordinary rewards for 512 steps;
+SAC references integrate `reward - alpha * log_probability` for 1,024 steps
+with checkpoint temperature frozen. Episode limits are extended only for this
+continuing-task evaluation. Neither reference uses a learned tail value.
+The remaining discount multipliers are about 3.9e-12 and 3.4e-5, respectively;
+these are multipliers, not absolute bounds on unbounded entropy rewards.
+
+Predictions are compared with independent reference means using signed bias,
+RMSE, explained variance, and reference standard errors. One-step TD residuals,
+twin-Q disagreement, n-step and finite lambda returns, target variance, and
+zero-tail controls accompany calibration. Explained variance can remain high
+despite a large constant value offset. SAC target critics are explicitly loaded
+for these diagnostics; inference-only loading otherwise restores only online Qs.
+
+All 63 training runs and evaluations completed. Initial network parameters
+match exactly within each algorithm/seed across every cell, including the
+legacy controls. Training loss checks remain finite. Parameter finiteness is
+checked at diagnostic intervals, not at every update.
+
+For PPO, final critic RMSE against stochastic Monte Carlo values is below
+(mean ± sample standard deviation across the three training seeds):
+
+| Environments (fragment steps) | lambda 0 | lambda 0.9 | lambda 0.98 | lambda 1 |
+| --- | --- | --- | --- | --- |
+| 16 (256) | 0.0887 ± 0.0094 | 0.0852 ± 0.0059 | 0.0949 ± 0.0042 | 0.1019 ± 0.0124 |
+| 64 (64) | 0.0917 ± 0.0065 | 0.0784 ± 0.0092 | 0.0950 ± 0.0088 | 0.0983 ± 0.0070 |
+| 256 (16) | 0.0973 ± 0.0117 | 0.0709 ± 0.0048 | 0.0764 ± 0.0104 | 0.0745 ± 0.0117 |
+| 1024 (4) | 0.0891 ± 0.0065 | 0.0784 ± 0.0082 | 0.0778 ± 0.0093 | 0.0724 ± 0.0060 |
+
+All lambda-0.9 and lambda-0.98 runs pass all 323 physical starts, regardless
+of population. Of all 48 PPO runs, 46 pass every start. Lambda 0 at 256
+environments fails swing-up for seed 27: 214/323 total, 0/17 hanging starts,
+and 17/17 upright starts. Its value RMSE is 0.1075 and stochastic MC mean
+return is 0.4114, versus 0.0698 and 0.5503 with lambda 0.98 for that seed.
+Lambda 1 at 16 environments misses one start in seed 7 (322/323); it settles
+at 13.84 seconds, too late for the final-two-second requirement. The miss is
+retained even though its final angle and velocity are within the limits.
+
+Longer fragments and larger lambda therefore do not monotonically improve
+critic quality. Four-step fragments work across all tested lambdas/seeds.
+Lambda 0.9 has the lowest mean critic RMSE at 16, 64, and 256 environments;
+lambda 1 is lowest at 1024. This small sweep does not establish a unique
+optimum. The existing lambda-0.98 / 256-environment defaults remain unchanged.
+
+SAC passes all 323 physical starts in every one of its 12 runs, but its critic
+has a persistent negative soft-value offset. Population-level means are:
+
+| Environments | Soft-value bias | Value RMSE | Explained variance | One-step TD RMSE |
+| --- | --- | --- | --- | --- |
+| 4 | -2.142 | 2.144 | 0.977 | 0.033 |
+| 16 | -2.112 | 2.115 | 0.958 | 0.040 |
+| 64 | -2.092 | 2.093 | 0.987 | 0.024 |
+| 256 | -2.109 | 2.110 | 0.984 | 0.037 |
+
+Mean soft Monte Carlo returns are 5.38–5.40, so predictions are about 39%
+too low. The offset is much larger than the reported Monte Carlo uncertainty.
+Good task performance, high explained variance, and small Bellman residuals
+do not establish accurate absolute values. Changing environment count alone
+does not remove this bias at the fixed 24,576-gradient-step budget.
+
+Frozen-policy return targets nevertheless benefit from bootstrapping. The
+table uses the reference PPO configuration (256 environments, lambda 0.98)
+and SAC configuration (16 environments), averaging the three seeds. Each
+entry compares the mean target's RMSE with an independent MC reference;
+bootstrap uses online V for PPO and target soft V for SAC.
+
+| Horizon | PPO bootstrap / zero-tail RMSE | SAC bootstrap / zero-tail RMSE |
+| --- | --- | --- |
+| 1 | 0.0627 / 0.5901 | 2.0958 / 5.4188 |
+| 4 | 0.0347 / 0.5465 | 2.0237 / 5.3840 |
+| 16 | 0.0144 / 0.3940 | 1.7856 / 5.1979 |
+| 64 | 0.0006 / 0.0505 | 1.0830 / 3.5779 |
+| 256 | 0.0006 / 0.0006 | 0.1565 / 0.5192 |
+
+At PPO's 256-step horizon, gamma**256 is about 1.98e-6, so a learned tail
+contributes almost nothing. Longer targets reduce bootstrap bias but raise
+within-state sampling variance; the figures also report single-target RMSE
+and variance, rather than only errors after averaging replicas. These are
+frozen-policy estimator comparisons, not additional training ablations.
+
+Slow SAC target convergence is one plausible mechanism for its offset. In an
+idealized constant-reward state with exact online fitting, gamma 0.99 and
+Polyak 0.995 contract target error by `0.995 + 0.005 * 0.99 = 0.99995` per
+optimizer step. The e-folding time is about 20,000 updates; 24,576 updates
+retain about 29% of an initial offset. This calculation does not establish
+causality: changing policy/temperature, replay coverage, nonlinear fitting,
+and twin-critic pessimism also affect the measured values. No target-rate or
+training-budget tuning was added to this sweep.
+
+The timeout controls all pass 323/323 starts before and after the correction.
+Their old-to-corrected value RMSEs are 0.0786→0.0710, 0.0912→0.0884, and
+0.0597→0.0698 for seeds 7/17/27. The correction is justified by the boundary
+contract tests; these runs do not show a consistent RMSE improvement.
+
+Artifacts and the frozen protocol are under
+`logs/pendulum_bootstrap_20261008/`. `scripts/sweep_pendulum_bootstrap.py` runs
+fresh worker processes; `scripts/pendulum_value_probe.py` implements the common
+evaluation. The local `summarize.py` produces CSV/JSON tables and figures,
+keeps legacy controls separate, and marks missing cells rather than filling
+them with other seeds. Concurrent worker times are not comparative benchmarks.
+`summary.json`, `cells.csv`, and `target_estimators.csv` contain all final
+results. `ppo_value_heatmaps.png`, `ppo_target_heatmaps.png`, and
+`sac_summary.png` show the main sweep; `bootstrap_horizons.png`
+shows horizon sensitivity for fixed policies. Physical learning curves and
+timeout controls are retained separately. `initialization_check.json` confirms
+exact initial-network equality for all 63 cells.
+
+Validation: 336 portable tests pass (95 deselected, one existing expected
+failure), plus 43 colocated gym/learning tests; Ruff passes. Short corrected
+PPO, legacy PPO, and SAC cells all complete training, checkpoint reload, physical
+evaluation, and independent value probes.
+
 ### Go2Trot PPO minibatch alignment (2026-10-08)
 
 Decision: retain the Go2Trot baseline of 32,768 samples per optimizer minibatch,

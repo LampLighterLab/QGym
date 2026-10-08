@@ -368,7 +368,8 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 uv run --frozen scripts/train.py \
     --headless --disable_wandb
 ```
 
-Seeds 7, 17, and 27 pass the fixed 323-start swing-up/stabilization suite after
+The original calibration's seeds 7, 17, and 27 passed the fixed 323-start
+swing-up/stabilization suite after
 200 updates, holding angle below 0.14 rad and speed below 0.5 rad/s for the final
 two seconds of each 15-second deterministic evaluation. See
 [the algorithm inventory and tuning evidence](MIGRATION_PLAN.md#pendulum-algorithm-validation-2026-10-07)
@@ -395,6 +396,40 @@ physical evaluation, and earlier unsuccessful settings are recorded in
 [the SAC validation notes](MIGRATION_PLAN.md#sac-with-the-same-physical-task-and-rewards).
 SAC resume restores models, target critics, temperature, and optimizer state;
 the replay buffer is rebuilt on resume.
+
+To sweep pendulum collection geometry and measure value accuracy:
+
+```bash
+uv run --frozen -m scripts.sweep_pendulum_bootstrap run \
+    --output logs/pendulum_bootstrap_sweep --jobs 6
+```
+
+This uses fresh MuJoCo CPU processes with one Torch thread each. PPO sweeps
+GAE lambda `0, 0.9, 0.98, 1` and `16, 64, 256, 1024` environments, holding
+4,096 samples per update, optimizer geometry, and 819,200 training samples
+fixed. SAC has no GAE parameter: its sweep uses `4, 16, 64, 256` environments,
+one-step TD targets, one gradient step per fresh transition, 1,024 warmup
+samples, and 24,576 training samples. SAC environment count also changes
+collection/update grouping and per-environment warmup duration. Both sweeps
+use seeds `7, 17, 27` with identical initial networks within each seed.
+
+The saved `protocol.json` fixes a campaign's settings. Repeating the command
+skips completed cells; archive an incomplete training cell before retrying it.
+`train-all` and `eval-all` can also be run separately; evaluation waits for
+cells in an active training campaign. `plan` writes the protocol without
+starting workers. Use a new output directory to change the sweep settings.
+
+Each cell evaluates deterministic swing-up/stabilization at quarter, half,
+and full training budgets. Final critics are compared against independent
+long stochastic-policy Monte Carlo returns on 40 held-out states; SAC returns
+include entropy at the saved temperature. Reports include value bias/RMSE,
+Monte Carlo uncertainty, one-step TD error, and bootstrapped versus truncated
+targets at several horizons. Diagnostic lambda returns for SAC do not change
+its training algorithm. PPO and SAC retain their respective discounts of
+0.95 and 0.99, so their raw value magnitudes are not directly comparable.
+The subsequent PPO timeout correction, its paired controls, and the completed
+three-seed sweep are recorded in the
+[value-calibration evidence](MIGRATION_PLAN.md#pendulum-value-calibration-and-bootstrap-sweep-2026-10-08).
 
 The [streamlining plan](STREAMLINING_PLAN.md) defines the calibration and
 acceptance protocol. The simulation worker fixes control and physics at 100 Hz,

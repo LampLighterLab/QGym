@@ -92,27 +92,32 @@ class OnPolicyRunner(BaseRunner):
                         # put reward integration here
                         self.update_rewards_dict(rewards_dict, step)
 
-                    self.reset_envs()
-
                     total_rewards = torch.stack(
                         tuple(rewards_dict.sum(dim=0).values())
-                    ).sum(dim=(0))
-
-                    actor_obs = self.get_noisy_obs(
+                    ).sum(0)
+                    noise = self.get_noise(
                         self.actor_cfg["obs"], self.actor_cfg["noise"]
                     )
-                    critic_obs = self.get_obs(self.critic_cfg["obs"])
-
+                    # Time limits bootstrap from the physical successor,
+                    # before the environment is reset.
+                    next_actor_obs = self.get_obs(self.actor_cfg["obs"]) + noise
+                    next_critic_obs = self.get_obs(self.critic_cfg["obs"])
                     transition.update(
                         {
-                            "next_actor_obs": actor_obs,
-                            "next_critic_obs": critic_obs,
+                            "next_actor_obs": next_actor_obs,
+                            "next_critic_obs": next_critic_obs,
                             "rewards": total_rewards,
                             "timed_out": self.env.timed_out,
+                            "terminated": self.env.terminated & ~self.env.timed_out,
                             "dones": self.env.timed_out | self.env.terminated,
                         }
                     )
                     storage.add_transitions(transition)
+
+                    self.reset_envs()
+                    # Reuse observation noise for surviving environments.
+                    actor_obs = self.get_obs(self.actor_cfg["obs"]) + noise
+                    critic_obs = self.get_obs(self.critic_cfg["obs"])
 
                     logger.log_rewards(rewards_dict.sum(dim=0))
                     logger.log_rewards({"total_rewards": total_rewards})
@@ -150,12 +155,13 @@ class OnPolicyRunner(BaseRunner):
         self.env.reset()
 
     def update_rewards_dict(self, rewards_dict, step):
+        terminated = self.env.terminated & ~self.env.timed_out
         # sum existing rewards with new rewards
         rewards_dict[step].update(
             self.get_rewards(
                 self.critic_cfg["reward"]["termination_weight"],
                 modifier=self.env.dt,
-                mask=self.env.terminated,
+                mask=terminated,
             ),
             inplace=True,
         )
@@ -163,7 +169,7 @@ class OnPolicyRunner(BaseRunner):
             self.get_rewards(
                 self.critic_cfg["reward"]["weights"],
                 modifier=self.env.dt,
-                mask=~self.env.terminated,
+                mask=~terminated,
             ),
             inplace=True,
         )
