@@ -115,6 +115,8 @@ class Go2TrotRunnerCfg(Go2RunnerCfg):
                 swing_contact = 1.25
 
     class algorithm(Go2RunnerCfg.algorithm):
+        # Retain the baseline geometry: RSL-RL alignment regressed sample
+        # efficiency and yaw tracking (see MIGRATION_PLAN.md).
         rollout_size = 2**16
         max_gradient_steps = 32
 

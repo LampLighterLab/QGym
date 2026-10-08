@@ -259,6 +259,15 @@ uv run --frozen python -m pytest tests/unit_tests/ -v
 
 ### Evaluate Go2Trot policy changes
 
+Go2Trot uses 32,768-sample PPO optimizer minibatches and 32 gradient steps per
+network. It independently collects 65,536 fresh samples per update, giving
+16 consecutive steps at its default 4,096 environments. Reducing the environment
+count increases those consecutive steps while approximately retaining the
+sample budget (collection rounds down to complete vectorized steps).
+These baseline settings are retained after a three-seed comparison found slower
+learning and worse yaw tracking with RSL-RL-matched settings; see the
+[minibatch-alignment evidence](MIGRATION_PLAN.md#go2trot-ppo-minibatch-alignment-2026-10-08).
+
 Use the controlled Go2Trot evaluator to compare policies or checkpoint
 progression.
 Each label must point to a checkpoint or a run directory containing

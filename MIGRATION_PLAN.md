@@ -333,6 +333,104 @@ trajectories, torque distributions, final angles, and per-term rewards.
 `validation_summary.json` records the final profile, all three seeds, and the
 resume check; the corresponding raw trials are in `timeouts_seed{7,17,27}/`.
 
+### Go2Trot PPO minibatch alignment (2026-10-08)
+
+Decision: retain the Go2Trot baseline of 32,768 samples per optimizer minibatch,
+32 gradient steps per network, and 65,536 fresh transitions per update (16 steps
+per environment at 4,096 environments). The RSL-RL-matched experiment below
+regressed sample efficiency and yaw tracking. The base config is also restored
+to its original 32,768-sample minibatches, 24 gradient steps, and 65,536-sample
+rollout; Go2Trot retains its 32-step override.
+
+The experiment used 24,576 samples per optimizer minibatch and 20 gradient
+steps per network. These match RSL-RL 5.5.1's four minibatches and five epochs
+when using 4,096 environments and its documented 24-step example. The matched
+rollout collected 98,304 fresh transitions per update, or 24 steps per
+environment. Task physics, rewards, observation/action scales, domain
+randomization, networks, learning rates, and the 550-update budget were
+unchanged. Observation normalizers were disabled. The experiment did not
+address the separate normalization or actor-only adaptive-learning-rate findings.
+
+With the matched geometry, the minibatch generator drew four complete
+24,576-sample batches per shuffle. Twenty steps processed 491,520 samples per
+network, using every fresh transition exactly five times. The retained baseline
+uses a 65,536-sample rollout, 32,768-sample minibatches, and 32 steps:
+1,048,576 sample presentations per network, with 16 uses each.
+
+The paired validation uses seeds 7, 17, and 27 on MuJoCo Warp / RTX 5080,
+4,096 environments, 100 Hz policy/control/physics, and 550 updates. Each seed
+uses identical initial actor and critic weights across the two profiles. Final
+checkpoint selection is fixed at update 550. That gives the new profile 50%
+more fresh transitions. An additional comparison holds samples equal:
+baseline update 450 versus new update 300, both 29,491,200 transitions.
+Evaluation uses 100 environments across ten balanced commands, both basic
+and randomized resets, five seconds per episode, and a 0.5-second settling
+exclusion for tracking metrics.
+Evaluation is deterministic, disables pushes, and retains configured physical
+randomization. Native Warp evaluation was added after the initial CPU survival
+regression; both backends' results are retained. Device RNG differences mean
+CPU-versus-Warp comparisons do not isolate physics alone.
+
+Before the runs, the acceptance screen requires finite model/loss tensors,
+final-20-update mean training reward at least 90% of baseline, survival loss
+at most five percentage points overall / ten points per command, and each
+forward/lateral/yaw RMSE no greater than
+`max(1.10 * baseline, baseline + 0.05)` in physical units. Survival accompanies
+tracking because the latter is measured only until failure. Gait, actuator,
+and per-term reward diagnostics are retained alongside the screen.
+
+The initial optimizer-only comparison retained the 65,536-sample rollout:
+two full minibatches per shuffle, a randomly omitted 16,384-sample remainder,
+and 7.5 average uses per transition. All three seeds failed CPU survival checks.
+Seed 7 improved final training reward from 5.729 to 5.869, but randomized-reset
+survival fell from 98% to 87%. For seed 17, forward-0.5-m/s survival fell from
+100% to 80%; for seed 27, forward-3-m/s survival fell from 100% to 60%.
+The initial seed-7 failure prompted the full-rollout experiment. These failures
+remain under `logs/go2trot_rsl_optimizer_20261008/`, including seed-7 diagnostic
+checkpoints 0, 100, and 250.
+
+The completed 98,304-sample rollout experiment also fails the declared
+learning-quality screen. At update 550, native Warp randomized-reset results
+are below; arrows denote baseline to matched geometry. The screen includes
+both reset modes and individual commands, beyond the aggregate values shown.
+
+| Seed | Survival | Forward RMSE (m/s) | Yaw RMSE (rad/s) | Native Warp screen |
+| --- | --- | --- | --- | --- |
+| 7 | 96% → 98% | 0.265 → 0.255 | 0.552 → 0.594 | Pass |
+| 17 | 97% → 100% | 0.229 → 0.231 | 0.466 → 0.561 | Fail: yaw, both reset modes |
+| 27 | 100% → 99% | 0.297 → 0.252 | 0.551 → 0.636 | Fail: yaw, both reset modes |
+
+CPU evaluation reproduces the yaw failures for seeds 17 and 27. Seed 7 also
+fails its CPU randomized forward-3-m/s survival check (100% to 80%). Final
+training rewards retain 95.11%, 98.47%, and 99.38% of the paired baselines,
+and all model/loss checks remain finite. Thus comparable aggregate reward and
+high survival do not establish equivalent tracking or gait quality. Mean
+native randomized contact-phase agreement falls from 63.82% to 59.25%; actuator
+diagnostics show no consistent improvement across seeds.
+
+Final-update comparisons use 54,067,200 fresh transitions for the new profile
+versus 36,044,800 for baseline. At exactly 29,491,200 samples, every seed fails
+the screen on both evaluation backends. Mean randomized forward RMSE rises
+from 0.273 to 0.399 m/s on native Warp (CPU: 0.278 to 0.388 m/s). The matched
+geometry still learns, but requires more samples for comparable forward
+tracking and retains worse yaw tracking at update 550. Similar learning quality
+is not established, so the baseline defaults are restored. Overlapping GPU
+workloads make these runs unsuitable for comparative speed claims.
+
+Resolved configs, checkpoints, finite-value checks, per-term training rewards,
+evaluation trajectories, and reproduction scripts remain gitignored under
+`logs/go2trot_rsl_rollout_20261008/`. `comparison.json` and
+`comparison_warp.json` record the CPU and native Warp screens; their PNGs show
+final-update curves and diagnostics. `same_samples.png` and
+`same_samples_warp.png` show the equal-sample comparison. Initial actor/critic
+weights and physical configs match exactly within each seed.
+
+Validation after restoring the baseline: 330 portable tests pass (95 deselected,
+one existing expected failure), plus 32 colocated gym tests and seven learning
+tests. Ruff passes. The campaign's CPU/GPU execution smokes passed, and a
+generator probe confirmed exactly 20 minibatches and five complete passes for
+the experimental configuration.
+
 ## Rebase verification (2026-09-08)
 
 Compared `cdx_freeze` with `cdx` and restored the reference Warp step,
