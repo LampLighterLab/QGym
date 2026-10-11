@@ -64,11 +64,11 @@ def _assert_cached_matches_native(backend, cached, env_ids):
             native_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
             velocity = np.empty(6)
             mujoco.mj_objectVelocity(
-                model, reference, mujoco.mjtObj.mjOBJ_XBODY, native_id, velocity, 0
+                model, reference, mujoco.mjtObj.mjOBJ_BODY, native_id, velocity, 0
             )
             expected_body = np.concatenate(
                 [
-                    reference.xpos[native_id],
+                    reference.xipos[native_id],
                     reference.xquat[native_id][[1, 2, 3, 0]],
                     velocity[3:],
                     velocity[:3],

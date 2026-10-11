@@ -102,6 +102,6 @@ guard and focused test at an external/config/backend boundary; if the same
 internal path just constructed the value correctly, consume it directly and
 let the operation fail naturally if that invariant is broken.
 
-GitHub CI runs the uv-managed portable and colocated suites, Ruff, and a package
-build. Local validation remains required for smoke training, Warp, and licensed
-VSim evidence.
+GitHub CI runs the uv-managed portable and colocated suites and Ruff; see
+`.github/workflows/unit_tests.yml`. Local validation remains required for
+Warp, licensed VSim, and training-quality evidence beyond the CPU smoke tests.

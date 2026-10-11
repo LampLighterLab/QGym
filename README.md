@@ -16,5 +16,8 @@ uv run --frozen python -m pytest -q
 Go2 hardware deployment uses the optional `unitree_sdk` extra. See the
 [deployment guide](README_DEPLOY.md) for the SDK and native dependencies.
 
+All three backends share the [CoM state convention](README_MUJOCO.md#state-reference-points).
+Older origin-based captures/checkpoints need review before comparison or reuse.
+
 Historical project notes are available in the
 [QGym wiki](https://github.com/sheim/QGym/wiki).

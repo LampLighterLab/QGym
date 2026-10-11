@@ -99,6 +99,10 @@ specification.
   commits the complete selected state and performs one native forward/refresh.
 - The task-facing quaternion convention is scalar-last `[x, y, z, w]`.
   Engine-specific ordering conversions belong only at the backend boundary.
+- Public root/body positions and linear velocities refer to each link's CoM
+  in world coordinates. The root is the base link's CoM, not the whole robot's.
+  Orientations retain model/link axes (not principal-inertia axes); angular
+  velocities are world-frame. Reset inputs follow the same convention.
 - Public DOFs, bodies, actions, contacts, and state tensors use
   `RobotLayout`'s canonical order. Native joint, motor, body, and sensor orders
   are private. Resolve semantic groups by exact names once at setup; do not

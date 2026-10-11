@@ -204,7 +204,6 @@ def run_profiles(env, backend, args, result):
     def gather():
         native.get_articulation_kinematic_states(backend._aks_get_arr)
         native.get_link_transforms(backend._lt_arr)
-        native.get_link_velocities(backend._lv_arr)
         native.get_sensor_forces(backend._fs_arr)
 
     operations = {

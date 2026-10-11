@@ -92,7 +92,9 @@ class SimBackend(ABC):
         """[num_envs, 13] — pos(3) quat(4) lin_vel(3) ang_vel(3).
 
         Root position and both velocities are in world coordinates; orientation
-        is scalar-last [x, y, z, w]. Reset writes use these same conventions.
+        is scalar-last [x, y, z, w] in model/link axes. Reset writes use these
+        same conventions. Position and linear velocity refer to the base
+        link's CoM, not the whole robot's.
         """
 
     @property
@@ -104,8 +106,10 @@ class SimBackend(ABC):
     def rigid_body_states(self) -> torch.Tensor:
         """[num_envs * num_bodies, 13]. Legged robots only.
 
-        Each row is body-origin position, scalar-last orientation, body-origin
-        world linear velocity, and world angular velocity.
+        Each row is world position, scalar-last model/link orientation, world
+        linear velocity, and world angular velocity. Position and linear
+        velocity refer to each link's CoM. Orientation retains model/link axes,
+        never principal-inertia axes.
 
         Raises NotImplementedError for backends/configs that don't need it.
         """

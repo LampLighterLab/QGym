@@ -24,6 +24,7 @@ MINI_CHEETAH_URDF = os.path.join(
     "urdf",
     "mini_cheetah_simple.urdf",
 )
+MINI_CHEETAH_SIM_DT = 0.002
 
 
 def vsim_guard():
@@ -198,7 +199,9 @@ def pendulum_backend_16(request):
 # ── Floating-base (mini_cheetah) fixtures ───────────────────────────────────
 
 
-def _make_mini_cheetah_cfg(sim_dt: float = 0.002) -> types.SimpleNamespace:
+def _make_mini_cheetah_cfg(
+    sim_dt: float = MINI_CHEETAH_SIM_DT,
+) -> types.SimpleNamespace:
     """Minimal cfg for mini_cheetah (floating-base, 12 DOFs)."""
     asset = types.SimpleNamespace(
         file=MINI_CHEETAH_URDF,
@@ -273,3 +276,16 @@ def legged_warp_backend():
     b.setup(_make_mini_cheetah_cfg(), num_envs=4, device="cuda:0", task=None)
     yield b
     b.close()
+
+
+FLOATING_BACKENDS = [
+    pytest.param("legged_cpu_backend", id="mujoco-cpu"),
+    pytest.param("legged_warp_backend", id="mujoco-warp", marks=pytest.mark.warp),
+    pytest.param("legged_vsim_backend", id="vsim", marks=pytest.mark.vsim),
+]
+
+
+@pytest.fixture(params=FLOATING_BACKENDS)
+def floating_backend(request):
+    """Real floating-base backends share admission checks without engine branches."""
+    return request.getfixturevalue(request.param)

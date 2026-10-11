@@ -17,12 +17,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 import numpy as np
 import torch
 
-from gym import GYM_ROOT_DIR
 from gym.utils.policy_io import state_component_names
 from gym.utils.torch_quat import quat_rotate_inverse
 
@@ -77,53 +75,13 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def _quat_rotate_xyzw(quat, vector):
-    q_xyz = quat[..., :3]
-    twice_cross = 2.0 * torch.cross(q_xyz, vector, dim=-1)
+def system_cog(body_states, body_mass):
+    """Mass-weight canonical link CoM states using each world's applied masses."""
+    mass = body_mass[..., None]
+    total_mass = body_mass.sum(dim=1, keepdim=True)
     return (
-        vector + quat[..., 3:4] * twice_cross + torch.cross(q_xyz, twice_cross, dim=-1)
-    )
-
-
-def canonical_body_inertial_properties(env):
-    """Return canonical body masses and body-frame center-of-mass offsets."""
-    asset_path = env.cfg.asset.file.format(GYM_ROOT_DIR=GYM_ROOT_DIR)
-    links = {
-        link.get("name"): link
-        for link in ET.parse(asset_path).getroot().findall("link")
-    }
-    masses = []
-    local_com = []
-    for name in env.robot_layout.body_names:
-        inertial = links[name].find("inertial")
-        if inertial is None:
-            masses.append(0.0)
-            local_com.append([0.0, 0.0, 0.0])
-            continue
-        mass = inertial.find("mass")
-        origin = inertial.find("origin")
-        masses.append(float(mass.get("value")) if mass is not None else 0.0)
-        xyz = origin.get("xyz", "0 0 0") if origin is not None else "0 0 0"
-        local_com.append([float(value) for value in xyz.split()])
-    return (
-        torch.tensor(masses, device=env.device),
-        torch.tensor(local_com, device=env.device),
-    )
-
-
-def system_cog(body_states, body_mass, body_local_com):
-    """Compute whole-robot CoG position and velocity in the world frame."""
-    local_com = body_local_com.unsqueeze(0).expand(body_states.shape[0], -1, -1)
-    offset_world = _quat_rotate_xyzw(body_states[..., 3:7], local_com)
-    body_com_position = body_states[..., 0:3] + offset_world
-    body_com_velocity = body_states[..., 7:10] + torch.cross(
-        body_states[..., 10:13], offset_world, dim=-1
-    )
-    mass = body_mass[None, :, None]
-    total_mass = body_mass.sum()
-    return (
-        torch.sum(body_com_position * mass, dim=1) / total_mass,
-        torch.sum(body_com_velocity * mass, dim=1) / total_mass,
+        torch.sum(body_states[..., 0:3] * mass, dim=1) / total_mass,
+        torch.sum(body_states[..., 7:10] * mass, dim=1) / total_mass,
     )
 
 
@@ -148,9 +106,9 @@ def _state_buffers(num_samples, num_feet, num_dof, num_actuators):
     }
 
 
-def _record_state(env, buffers, index, body_mass, body_local_com):
+def _record_state(env, buffers, index):
     body_states = env._backend.rigid_body_states.view(env.num_envs, env.num_bodies, 13)
-    cog_position, cog_velocity = system_cog(body_states, body_mass, body_local_com)
+    cog_position, cog_velocity = system_cog(body_states, env._backend.link_mass)
     feet = env.feet_indices
     foot_position = body_states[:, feet, 0:3]
     foot_relative_world = foot_position - cog_position[:, None, :]
@@ -235,7 +193,6 @@ def run_cell(args):
     buffers = _state_buffers(n_steps, num_feet, env.num_dof, env.num_actuators)
     policy_actions = np.empty((n_steps, runner.alg.actor.num_actions), dtype=np.float32)
     position_targets = np.empty((n_steps, env.num_actuators), dtype=np.float32)
-    body_mass, body_local_com = canonical_body_inertial_properties(env)
     initial_root_state = env.root_states[0].detach().cpu().numpy().copy()
     initial_dof_position = env.dof_pos[0].detach().cpu().numpy().copy()
     initial_dof_velocity = env.dof_vel[0].detach().cpu().numpy().copy()
@@ -254,7 +211,7 @@ def run_cell(args):
             policy_actions[step] = actions[0].detach().cpu().numpy()
             position_targets[step] = env.dof_pos_target[0].detach().cpu().numpy()
             env.step()
-            _record_state(env, buffers, step, body_mass, body_local_com)
+            _record_state(env, buffers, step)
 
     applied_friction = float(env.domain_randomizer.contact_friction[0].cpu())
     actor_training = runner.alg.actor.training
@@ -265,10 +222,11 @@ def run_cell(args):
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         artifact_path,
-        schema_version=np.int64(1),
+        schema_version=np.int64(2),
         task="go2trot",
         backend_label=backend.label,
         backend=backend.backend,
+        body_state_reference_point="com",
         device=backend.device,
         dr_mode=args.dr_mode,
         contact_friction=np.float32(applied_friction),
@@ -330,6 +288,8 @@ def validate_pair(output, backend, args):
         with np.load(path, allow_pickle=False) as data:
             artifacts[dr_mode] = {key: data[key] for key in data.files}
         artifact = artifacts[dr_mode]
+        if str(artifact["body_state_reference_point"]) != "com":
+            raise ValueError(f"{path}: incompatible body-state reference point")
         if not bool(artifact["inference_mode"]):
             raise ValueError(f"{path}: policy was not in inference mode")
         if int(artifact["checkpoint_iteration"]) != 1000:

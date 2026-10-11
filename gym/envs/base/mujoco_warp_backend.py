@@ -50,11 +50,11 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._qvel_t: torch.Tensor = None  # [N, nv]
         self._qfrc_t: torch.Tensor = None  # [N, nv]
         self._cfrc_t: torch.Tensor = None  # [N, nbody, 6]
-        self._xpos_t: torch.Tensor = None  # [N, nbody, 3]
+        self._body_com_positions_world: torch.Tensor = None  # [N, nbody, 3]
         self._xquat_t: torch.Tensor = None  # [N, nbody, 4]
         self._cvel_t: torch.Tensor = None  # [N, nbody, 6]
         self._subtree_com_t: torch.Tensor = None  # [N, nbody, 3]
-        self._body_rootid_t: torch.Tensor = None  # [nbody]
+        self._body_rootid_t: torch.Tensor = None  # [num_bodies], canonical order
         self._root_states_t: torch.Tensor = None  # [N, 13]
         self._rigid_body_states_t: torch.Tensor = None  # [N, nbody, 13]
         self._dof_state_t: torch.Tensor = None  # [N, num_dof, 2]
@@ -114,29 +114,24 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         self._dof_vel_view.copy_(
             qvel_native.index_select(1, self._canonical_to_native_dof)
         )
-        if self._has_free_joint:
-            rs = self._root_states_t
-            rs[:, :3] = self._qpos_t[:, :3]
-            rs[:, 3:7] = self._qpos_t[:, 3:7][:, WXYZ_TO_XYZW]
-            rs[:, 7:10] = self._qvel_t[:, :3]
-            # Free-joint angular qvel is body-local; public velocity is world-frame.
-            rs[:, 10:13] = quat_apply(rs[:, 3:7], self._qvel_t[:, 3:6])
         rbs = self._rigid_body_states_t
-        xpos = self._xpos_t.index_select(1, self._canonical_to_native_body)
+        body_com_positions_world = self._body_com_positions_world.index_select(
+            1, self._canonical_to_native_body
+        )
         xquat = self._xquat_t.index_select(1, self._canonical_to_native_body)
         cvel = self._cvel_t.index_select(1, self._canonical_to_native_body)
-        root_ids = self._body_rootid_t.index_select(
-            0, self._canonical_to_native_body
-        ).long()
-        root_com = self._subtree_com_t.index_select(1, root_ids)
+        root_com = self._subtree_com_t.index_select(1, self._body_rootid_t)
         angular_velocity = cvel[:, :, 0:3]
+        # Native spatial velocities are referenced to the tree CoM.
         linear_velocity = cvel[:, :, 3:6] - torch.cross(
-            xpos - root_com, angular_velocity, dim=-1
+            body_com_positions_world - root_com, angular_velocity, dim=-1
         )
-        rbs[:, :, 0:3] = xpos
+        rbs[:, :, 0:3] = body_com_positions_world
         rbs[:, :, 3:7] = xquat[:, :, WXYZ_TO_XYZW]
         rbs[:, :, 7:10] = linear_velocity
         rbs[:, :, 10:13] = angular_velocity
+        if self._has_free_joint:
+            self._root_states_t.copy_(rbs[:, self._root_body_index])
         cfrc = self._cfrc_t.index_select(1, self._canonical_to_native_body)
         self._contact_forces_t.copy_(cfrc[..., 3:6])
 
@@ -222,6 +217,12 @@ class MuJocoWarpBackend(MuJocoBackendBase):
                     batch_sizes[name] = num_envs
             self._m = mjw.put_model(mjm, batch_sizes=batch_sizes or None)
             mjd = mujoco.MjData(mjm)
+            # Publish valid poses/velocities before the task's initial reset.
+            # Do not solve contacts at the URDF's uninitialized zero pose: it
+            # may intersect the ground and exceed the task's constraint budget.
+            mujoco.mj_kinematics(mjm, mjd)
+            mujoco.mj_comPos(mjm, mjd)
+            mujoco.mj_comVel(mjm, mjd)
             # mujoco-warp ignores the legacy mjModel.njmax field; forward it
             # (cfg.mujoco.njmax → spec → mjm → put_data).  -1
             # means unset → let warp use its own heuristic.
@@ -233,11 +234,16 @@ class MuJocoWarpBackend(MuJocoBackendBase):
             self._qvel_t = wp.to_torch(self._d.qvel)
             self._qfrc_t = wp.to_torch(self._d.qfrc_applied)
             self._cfrc_t = wp.to_torch(self._d.cfrc_ext)
-            self._xpos_t = wp.to_torch(self._d.xpos)
+            # xipos is the world position of each body's inertial frame (CoM).
+            self._body_com_positions_world = wp.to_torch(self._d.xipos)
             self._xquat_t = wp.to_torch(self._d.xquat)
             self._cvel_t = wp.to_torch(self._d.cvel)
             self._subtree_com_t = wp.to_torch(self._d.subtree_com)
-            self._body_rootid_t = wp.to_torch(self._m.body_rootid)
+            self._body_rootid_t = (
+                wp.to_torch(self._m.body_rootid)
+                .index_select(0, self._canonical_to_native_body)
+                .long()
+            )
             if self._randomize_contact_friction:
                 self._geom_friction_t = wp.to_torch(self._m.geom_friction)
                 if mjm.npair:
@@ -324,14 +330,24 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         )
         if self._has_free_joint:
             rs = self._root_states_t
-            torch.where(mask, rs[:, :3], self._qpos_t[:, :3], out=self._qpos_t[:, :3])
+            offset = quat_apply(
+                rs[:, 3:7], self._root_com_offset.expand(self._num_envs, -1)
+            )
+            torch.where(
+                mask, rs[:, :3] - offset, self._qpos_t[:, :3], out=self._qpos_t[:, :3]
+            )
             torch.where(
                 mask,
                 rs[:, 3:7][:, XYZW_TO_WXYZ],
                 self._qpos_t[:, 3:7],
                 out=self._qpos_t[:, 3:7],
             )
-            torch.where(mask, rs[:, 7:10], self._qvel_t[:, :3], out=self._qvel_t[:, :3])
+            torch.where(
+                mask,
+                rs[:, 7:10] - torch.cross(rs[:, 10:13], offset, dim=-1),
+                self._qvel_t[:, :3],
+                out=self._qvel_t[:, :3],
+            )
             torch.where(
                 mask,
                 # The requested orientation may change in this same reset.
@@ -348,9 +364,14 @@ class MuJocoWarpBackend(MuJocoBackendBase):
         if not self._has_free_joint:
             return
         rs = self._root_states_t
-        self._qpos_t[:, :3].copy_(rs[:, :3])
+        offset = quat_apply(
+            rs[:, 3:7], self._root_com_offset.expand(self._num_envs, -1)
+        )
+        self._qpos_t[:, :3].copy_(rs[:, :3] - offset)
         self._qpos_t[:, 3:7].copy_(rs[:, 3:7][:, XYZW_TO_WXYZ])
-        self._qvel_t[:, :3].copy_(rs[:, 7:10])
+        self._qvel_t[:, :3].copy_(
+            rs[:, 7:10] - torch.cross(rs[:, 10:13], offset, dim=-1)
+        )
         self._qvel_t[:, 3:6].copy_(quat_rotate_inverse(rs[:, 3:7], rs[:, 10:13]))
         with self._wp_ctx:
             mjw.forward(self._m, self._d)

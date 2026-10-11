@@ -21,7 +21,6 @@ from gym.envs.base.mujoco_backend_base import (
     WXYZ_TO_XYZW,
     XYZW_TO_WXYZ,
 )
-from gym.utils.torch_quat import quat_apply, quat_rotate_inverse
 
 
 class MuJocoCPUBackend(MuJocoBackendBase):
@@ -241,30 +240,42 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             d.cfrc_ext[body_order, 3:6].copy()
         )
         rbs = self._rigid_body_states_t[env_id]
-        rbs[:, 0:3] = torch.from_numpy(d.xpos[body_order].copy())
+        # MuJoCo's xipos locates each body's inertial frame (CoM) in world axes.
+        body_com_positions_world = d.xipos[body_order]
+        rbs[:, 0:3] = torch.from_numpy(body_com_positions_world.copy())
         mj_quat = torch.from_numpy(d.xquat[body_order].copy())
         rbs[:, 3:7] = mj_quat[:, WXYZ_TO_XYZW]
         angular_velocity = d.cvel[body_order, 0:3]
         root_com = d.subtree_com[model.body_rootid[body_order]]
-        body_offset = d.xpos[body_order] - root_com
+        # cvel is referenced to the tree CoM, not each individual link's CoM.
+        body_offset = body_com_positions_world - root_com
         linear_velocity = d.cvel[body_order, 3:6] - np.cross(
             body_offset, angular_velocity
         )
         rbs[:, 7:10] = torch.from_numpy(linear_velocity.copy())
         rbs[:, 10:13] = torch.from_numpy(angular_velocity.copy())
         if self._has_free_joint:
-            rs = self._root_states_t[env_id]
-            rs[:3] = torch.from_numpy(d.qpos[:3].copy())
-            mj_quat = torch.from_numpy(d.qpos[3:7].copy())
-            rs[3:7] = mj_quat[WXYZ_TO_XYZW]
-            rs[7:10] = torch.from_numpy(d.qvel[:3].copy())
-            # Free-joint translation is world-frame, but angular qvel is
-            # body-local. Public root velocities are both world-frame.
-            rs[10:13] = quat_apply(
-                mj_quat[WXYZ_TO_XYZW], torch.from_numpy(d.qvel[3:6].copy())
-            )
+            self._root_states_t[env_id].copy_(rbs[self._root_body_index])
 
     # ── Reset ──────────────────────────────────────────────────────────────────
+
+    def _write_root_state(self, env_id: int) -> None:
+        """Translate the requested base CoM state to free-joint coordinates."""
+        state = self._root_states_t[env_id].cpu().numpy()
+        data = self._datas[env_id]
+        data.qpos[3:7] = state[3:7][XYZW_TO_WXYZ]
+        rotation = np.empty(9)
+        # Use the new orientation, not the cached pre-reset body transform.
+        mujoco.mju_quat2Mat(rotation, data.qpos[3:7])
+        rotation = rotation.reshape(3, 3)
+        offset = (
+            rotation
+            @ self._model_for_env(env_id).body_ipos[self._root_native_body_index]
+        )
+        data.qpos[:3] = state[:3] - offset
+        data.qvel[:3] = state[7:10] - np.cross(state[10:13], offset)
+        # Free-joint angular velocity is body-local, unlike its translation.
+        data.qvel[3:6] = rotation.T @ state[10:13]
 
     def reset_state(self, reset_mask: torch.Tensor) -> None:
         qoff = self._qpos_offset
@@ -281,14 +292,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
                 self._dof_vel_view[i].cpu().numpy()[self._native_to_canonical_dof_np]
             )
             if self._has_free_joint:
-                rs = self._root_states_t[i].cpu()
-                self._datas[i].qpos[:3] = rs[:3].numpy()
-                self._datas[i].qpos[3:7] = rs[3:7][XYZW_TO_WXYZ].numpy()
-                self._datas[i].qvel[:3] = rs[7:10].numpy()
-                # Use the requested orientation, which may change in this reset.
-                self._datas[i].qvel[3:6] = quat_rotate_inverse(
-                    rs[3:7], rs[10:13]
-                ).numpy()
+                self._write_root_state(i)
             mujoco.mj_forward(model, self._datas[i])
             mujoco.mj_rnePostConstraint(model, self._datas[i])
             self._copy_env_state_from_mujoco(i)
@@ -299,11 +303,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         for i in range(self._num_envs):
             self._activate_domain(i)
             model = self._model_for_env(i)
-            rs = self._root_states_t[i].cpu()
-            self._datas[i].qpos[:3] = rs[:3].numpy()
-            self._datas[i].qpos[3:7] = rs[3:7][XYZW_TO_WXYZ].numpy()
-            self._datas[i].qvel[:3] = rs[7:10].numpy()
-            self._datas[i].qvel[3:6] = quat_rotate_inverse(rs[3:7], rs[10:13]).numpy()
+            self._write_root_state(i)
             mujoco.mj_forward(model, self._datas[i])
             mujoco.mj_rnePostConstraint(model, self._datas[i])
             self._copy_env_state_from_mujoco(i)
