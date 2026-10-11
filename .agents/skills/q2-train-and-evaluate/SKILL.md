@@ -9,6 +9,22 @@ Read `AGENTS.md`, `scripts/train.py --help`, the selected task config,
 and the relevant evaluation script. Use current CLI help rather than a copied
 flag list; this workflow changes during active tuning.
 
+## Enforce workstation resource limits
+
+Follow the local workstation resource rules in `AGENTS.md` before any training,
+simulation, benchmark, evaluation, or audit. Use the shared
+`codex-workloads.slice` through `scripts/run_resource_limited.py`; verify the
+aggregate 40 GiB RAM / 1 GiB swap cap and host-visible existing jobs first.
+Start one heavy worker, with no overlapping tests or other experiments across
+agents. Stop if host MemAvailable falls below 12 GiB. Measure a representative
+complete worker peak and reserve at least 50% headroom before increasing
+concurrency. A memory failure requires investigation and a smaller workload,
+not an unchanged retry. Record limits, concurrency, and peak memory with runs.
+Do not launch if OS-enforced aggregate limits cannot be verified.
+
+The training/evaluation commands below are the inner commands passed to
+`python3 scripts/run_resource_limited.py run -- ...` on this workstation.
+
 ## Prepare a controlled run
 
 Record before execution:

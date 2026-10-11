@@ -71,6 +71,15 @@ size alone does not make two PPO experiments equivalent.
 Discount and GAE values may be derived from physical horizons and control dt.
 Re-run frequency conversion rather than editing derived values.
 
+## Resource-safe experiment evidence
+
+Local experiments, evaluation, and tests must follow `AGENTS.md`'s shared
+workstation memory limits and use `scripts/run_resource_limited.py`. Begin with
+one heavy worker and no overlapping heavy audits/tests. Confirm OS-enforced
+aggregate limits before running; record the complete-run peak and reserve 50%
+headroom before increasing concurrency. Preserve partial experiment evidence
+and investigate memory failures before restarting.
+
 ## Evidence workflow
 
 1. State the proposed mechanism and a result that would falsify it.

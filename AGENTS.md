@@ -53,6 +53,39 @@ fixes should remain separately reviewable.
 
 ## Environment
 
+### Local workstation resource limits
+
+Desktop responsiveness takes priority over experiment speed. All local
+Codex-managed experiment, simulation, training, benchmark, and test workers
+across agents/chats share a maximum of **40 GiB RAM and 1 GiB swap**, including
+descendants. Do not raise these limits without explicit user approval. Keep
+the desktop, editor, and unrelated processes outside the workload group.
+
+- Before heavy work, use `scripts/run_resource_limited.py` to establish and
+  verify the shared `codex-workloads.slice` cgroup limits, then launch through
+  its `run -- ...` command. Per-process limits, polling, and thread counts
+  alone are insufficient. If OS enforcement is unavailable, report it and
+  do not launch the heavy workload.
+- Check host-visible existing jobs, shared workload memory, available RAM,
+  and swap before starting or resuming. A sandbox-only process listing is
+  insufficient. Prevent duplicate runs and include other agents/chats in
+  the shared accounting. Never stop unrelated processes.
+- Start with **one memory-heavy worker**; do not overlap it with heavy tests,
+  audits, or other experiments. Measure peak memory through a representative
+  complete worker run, including its heaviest stage, before considering more
+  concurrency. Budget at least **1.5 times that measured peak** per worker;
+  CPU count alone must never determine concurrency.
+- Keep at least **12 GiB host MemAvailable** after projected additional use.
+  Monitor throughout execution and stop the managed workload if host
+  MemAvailable falls below 12 GiB or sustained swap thrashing develops.
+- After an OOM, memory-limit termination, or memory-pressure stop, investigate
+  and reduce the workload. Do not automatically retry unchanged or increase
+  limits. Preserve completed checkpoints/results, and record effective
+  limits, concurrency, and observed peak memory with experiment evidence.
+- Verify enforcement with a small bounded check, never by exhausting host
+  memory. Run all heavy commands below through the resource guard on this
+  workstation; portable CI commands remain unchanged.
+
 Use uv to manage the checked-in `.venv` and lockfile. `pyproject.toml` is the
 only dependency and package source of truth; do not add parallel pip setup or
 requirements files.
@@ -217,6 +250,7 @@ local gates before handoff.
 
 ## Documentation and Skills
 
+- Prepare paper and research drafts in Markdown or LaTeX as the editable source.
 - Update `README_MUJOCO.md` when setup, platform support, or public CLI changes.
 - Update `MIGRATION_PLAN.md` when parity evidence, campaign gates, backend
   status, or migration decisions change. Keep failed experiments and invalid

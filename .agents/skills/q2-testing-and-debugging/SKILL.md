@@ -9,6 +9,22 @@ Read `AGENTS.md`, `pyproject.toml`'s pytest settings, the failing code path,
 and the nearest test. Start with the cheapest experiment that distinguishes
 plausible causes; do not begin by tuning around the symptom.
 
+## Enforce workstation resource limits
+
+Before local tests or diagnostic simulations, follow `AGENTS.md`'s workstation
+resource limits. Run them through `scripts/run_resource_limited.py` in the same
+`codex-workloads.slice` as experiments: aggregate 40 GiB RAM and 1 GiB swap,
+including descendants. Check host-visible jobs first and do not overlap heavy
+tests/audits with a heavy experiment worker. Stop below 12 GiB host MemAvailable.
+One complete representative worker run must establish peak memory before any
+concurrency increase, with at least 50% headroom. After a memory failure,
+investigate and reduce the workload before retrying. If aggregate OS enforcement
+is unavailable, report the limitation and do not launch. Verify limits using
+small bounded allocations rather than host memory exhaustion.
+
+The test commands below are the inner commands passed to
+`python3 scripts/run_resource_limited.py run -- ...` on this workstation.
+
 ## Test entry points
 
 The default pytest suite is intentionally the unit suite:
