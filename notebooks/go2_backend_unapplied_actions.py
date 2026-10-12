@@ -18,6 +18,8 @@ Then open this notebook:
         notebooks/go2_backend_unapplied_actions.py
 
 Set ``Q2_UNAPPLIED_ACTIONS_DIR`` to select another artifact directory.
+Artifacts must declare the CoM state convention; regenerate legacy captures
+with the command above before opening them in this notebook.
 """
 
 import marimo
@@ -38,7 +40,17 @@ def _():
 
     def load_npz(path):
         with np.load(path, allow_pickle=False) as source:
-            return {key: source[key] for key in source.files}
+            data = {key: source[key] for key in source.files}
+        if (
+            "body_state_reference_point" not in data
+            or str(data["body_state_reference_point"]) != "com"
+        ):
+            raise ValueError(
+                f"{path}: requires body_state_reference_point='com'; "
+                "regenerate legacy or unlabelled trajectories with the command "
+                "in this notebook's docstring"
+            )
+        return data
 
     def rmse_over_time(reference, candidate):
         axes = tuple(range(1, reference.ndim))
@@ -124,6 +136,11 @@ def _(Path, artifact_picker, json, load_npz, np):
     mujoco = load_npz(artifact_root / "mujoco.npz")
     comparison_path = artifact_root / "comparison.json"
     comparison = json.loads(comparison_path.read_text())
+    if (
+        "body_state_reference_point" not in comparison["protocol"]
+        or comparison["protocol"]["body_state_reference_point"] != "com"
+    ):
+        raise ValueError(f"{comparison_path}: regenerate the comparison for CoM state")
 
     np.testing.assert_array_equal(vsim["time"], mujoco["time"])
     np.testing.assert_array_equal(
@@ -171,11 +188,11 @@ def _(first_true, mujoco, np, rmse_over_time, vsim):
             vsim["dof_velocity"], mujoco["dof_velocity"]
         ),
         "Root state": rmse_over_time(vsim["root_state"], mujoco["root_state"]),
-        "Rigid-body position [m]": rmse_over_time(
+        "Link CoM position [m]": rmse_over_time(
             vsim["rigid_body_state"][..., :3],
             mujoco["rigid_body_state"][..., :3],
         ),
-        "Rigid-body velocity [m/s]": rmse_over_time(
+        "Link CoM velocity [m/s]": rmse_over_time(
             vsim["rigid_body_state"][..., 7:10],
             mujoco["rigid_body_state"][..., 7:10],
         ),
@@ -357,14 +374,14 @@ def _(
                 "Joint-velocity divergence",
             ),
             (
-                "Rigid-body position [m]",
+                "Link CoM position [m]",
                 "m",
-                "Body-origin position divergence",
+                "Link CoM position divergence",
             ),
             (
-                "Rigid-body velocity [m/s]",
+                "Link CoM velocity [m/s]",
                 "m/s",
-                "Body-origin velocity divergence",
+                "Link CoM velocity divergence",
             ),
             (
                 "Joint acceleration [rad/s²]",
@@ -717,8 +734,8 @@ def _(
         ("Foot contact force [N]", "N"),
         ("Joint position [rad]", "rad"),
         ("Joint velocity [rad/s]", "rad/s"),
-        ("Rigid-body position [m]", "m"),
-        ("Rigid-body velocity [m/s]", "m/s"),
+        ("Link CoM position [m]", "m"),
+        ("Link CoM velocity [m/s]", "m/s"),
         ("Joint acceleration [rad/s²]", "rad/s²"),
         ("Contact impulse [N s]", "N s"),
         ("Root state", "mixed"),
@@ -766,7 +783,7 @@ def _(
             ("Foot contact force [N]", "N"),
             ("Joint position [rad]", "rad"),
             ("Joint velocity [rad/s]", "rad/s"),
-            ("Rigid-body velocity [m/s]", "m/s"),
+            ("Link CoM velocity [m/s]", "m/s"),
             ("Joint acceleration [rad/s²]", "rad/s²"),
         )
         _figure, _axes = plt.subplots(
@@ -1163,7 +1180,7 @@ def _(comparison, mo, vsim):
 
             {_mode}, reset agreement is effectively exact. After one 2 ms step,
             joint-velocity RMSE is `{_post['dof_velocity_rmse_rad_s']:.3g} rad/s`
-            and body-origin position RMSE is
+            and link CoM position RMSE is
             `{_post['rigid_body_position_rmse_m']:.3g} m`. First contact occurs
             at `{_first['vsim_time_s']:.3f} s` in VSim and
             `{_first['mujoco_time_s']:.3f} s` in MuJoCo. At the earliest impact,

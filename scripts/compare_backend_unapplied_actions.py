@@ -307,10 +307,11 @@ def run_cell(args):
     with temporary.open("wb") as output:
         np.savez_compressed(
             output,
-            schema_version=np.int64(3),
+            schema_version=np.int64(4),
             task="go2trot",
             backend_label=backend.label,
             backend=backend.backend,
+            body_state_reference_point="com",
             device=backend.device,
             checkpoint_path=str(checkpoint),
             checkpoint_sha256=sha256_file(checkpoint),
@@ -371,6 +372,15 @@ def load_artifact(path):
 
 
 def validate_protocol(reference, candidate):
+    for label, artifact in (("reference", reference), ("candidate", candidate)):
+        if (
+            "body_state_reference_point" not in artifact
+            or str(artifact["body_state_reference_point"]) != "com"
+        ):
+            raise ValueError(
+                f"{label} artifact must declare body_state_reference_point='com'; "
+                "regenerate legacy or unlabelled trajectories before comparing"
+            )
     for key in (
         "schema_version",
         "task",
@@ -511,6 +521,7 @@ def comparison_summary(reference, candidate):
     body_order = np.argsort(contact_body_difference[first_contact_step])[::-1][:10]
     return {
         "protocol": {
+            "body_state_reference_point": str(reference["body_state_reference_point"]),
             "checkpoint_sha256": str(reference["checkpoint_sha256"]),
             "checkpoint_iteration": int(reference["checkpoint_iteration"]),
             "duration_s": float(reference["duration_s"]),
@@ -884,11 +895,11 @@ def _plot_dynamics_diagnostics(output, summary):
         3, 2, figsize=(11, 10), sharex=True, constrained_layout=True
     )
     plots = (
-        (time, "rigid_body_position_rmse_m", "body-origin position RMSE [m]"),
+        (time, "rigid_body_position_rmse_m", "link CoM position RMSE [m]"),
         (
             time,
             "rigid_body_linear_velocity_rmse_m_s",
-            "body-origin linear-velocity RMSE [m/s]",
+            "link CoM linear-velocity RMSE [m/s]",
         ),
         (time, "dof_acceleration_rmse_rad_s2", "joint-acceleration RMSE [rad/s²]"),
         (
@@ -1031,8 +1042,8 @@ simulation frequency with one physics step per control step.
 - Foot contact-force RMSE: {first["foot_contact_rmse_n"]:.6g} N
 - Joint-position RMSE: {first["dof_position_rmse_rad"]:.6g} rad
 - Joint-velocity RMSE: {first["dof_velocity_rmse_rad_s"]:.6g} rad/s
-- Rigid-body position RMSE: {first["rigid_body_position_rmse_m"]:.6g} m
-- Rigid-body origin-velocity RMSE:
+- Link CoM position RMSE: {first["rigid_body_position_rmse_m"]:.6g} m
+- Link CoM linear-velocity RMSE:
   {first["rigid_body_linear_velocity_rmse_m_s"]:.6g} m/s
 - Joint-acceleration RMSE: {first["dof_acceleration_rmse_rad_s2"]:.6g} rad/s²
 - Applied-torque RMSE: {first["applied_torque_rmse_nm"]:.6g} N m
@@ -1066,9 +1077,9 @@ No body is in contact at t=0 or t={first["time_s"]:.3g} s.
 - Foot contact-force RMSE: {pre_termination_peak["foot_contact_rmse_n"]:.6g} N
 - Joint-position RMSE: {pre_termination_peak["dof_position_rmse_rad"]:.6g} rad
 - Joint-velocity RMSE: {pre_termination_peak["dof_velocity_rmse_rad_s"]:.6g} rad/s
-- Rigid-body position RMSE: {pre_termination_peak["rigid_body_position_rmse_m"]:.6g}
+- Link CoM position RMSE: {pre_termination_peak["rigid_body_position_rmse_m"]:.6g}
   m
-- Rigid-body linear-velocity RMSE:
+- Link CoM linear-velocity RMSE:
   {pre_termination_peak["rigid_body_linear_velocity_rmse_m_s"]:.6g} m/s
 - Joint-acceleration RMSE:
   {pre_termination_peak["dof_acceleration_rmse_rad_s2"]:.6g} rad/s²

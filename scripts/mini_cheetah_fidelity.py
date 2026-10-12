@@ -393,38 +393,34 @@ def _default_pose_pd_torques(env):
     return torques
 
 
-def _canonical_body_inertial_properties(env):
-    """Return canonical body masses and body-frame COM offsets from the URDF."""
+def _read_body_com_offsets(env):
+    """Read canonical model-origin-to-CoM offsets for locating collision geometry."""
     asset_path = env.cfg.asset.file.format(GYM_ROOT_DIR=GYM_ROOT_DIR)
     links = {
         link.get("name"): link
         for link in ET.parse(asset_path).getroot().findall("link")
     }
-    masses = []
     local_com = []
     for name in env._backend.body_names:
         inertial = links[name].find("inertial")
         if inertial is None:
-            masses.append(0.0)
             local_com.append([0.0, 0.0, 0.0])
             continue
-        mass = inertial.find("mass")
         origin = inertial.find("origin")
-        masses.append(float(mass.get("value")) if mass is not None else 0.0)
         xyz = origin.get("xyz", "0 0 0") if origin is not None else "0 0 0"
         local_com.append([float(value) for value in xyz.split()])
-    return (
-        torch.tensor(masses, device=env.device),
-        torch.tensor(local_com, device=env.device),
-    )
+    return torch.tensor(local_com, device=env.device)
 
 
 def _contact_trace_buffers(env, n_steps):
     nfeet = len(env.feet_indices)
-    body_mass, body_local_com = _canonical_body_inertial_properties(env)
+    body_local_com = _read_body_com_offsets(env)
+    foot_collision_offset = torch.tensor(
+        FOOT_SPHERE_LOCAL_CENTER, dtype=body_local_com.dtype, device=env.device
+    ).expand(nfeet, -1)
+    foot_collision_offset = foot_collision_offset - body_local_com[env.feet_indices]
     return {
-        "_body_mass": body_mass,
-        "_body_local_com": body_local_com,
+        "foot_collision_offset": foot_collision_offset.cpu().numpy(),
         "base_pos": np.empty((n_steps + 1, env.num_envs, 3), dtype=np.float32),
         "base_quat": np.empty((n_steps + 1, env.num_envs, 4), dtype=np.float32),
         "base_lin_vel": np.empty((n_steps + 1, env.num_envs, 3), dtype=np.float32),
@@ -450,10 +446,11 @@ def _record_contact_trace(env, buffers, index):
     buffers["dof_vel"][index] = env.dof_vel.cpu().numpy()
     buffers["foot_pos"][index] = rbs[:, env.feet_indices, 0:3].cpu().numpy()
     buffers["foot_quat"][index] = rbs[:, env.feet_indices, 3:7].cpu().numpy()
-    local_com = buffers["_body_local_com"].unsqueeze(0).expand(env.num_envs, -1, -1)
-    body_com = rbs[..., 0:3] + _quat_rotate_xyzw(rbs[..., 3:7], local_com)
-    body_mass = buffers["_body_mass"]
-    system_com = torch.sum(body_com * body_mass[None, :, None], dim=1) / body_mass.sum()
+    body_com = rbs[..., 0:3]
+    body_mass = env._backend.link_mass
+    system_com = torch.sum(body_com * body_mass[..., None], dim=1) / body_mass.sum(
+        dim=1, keepdim=True
+    )
     buffers["system_com_pos"][index] = system_com.cpu().numpy()
     buffers["contact_force"][index] = (
         env.contact_forces[:, env.feet_indices, :].cpu().numpy()
@@ -464,8 +461,6 @@ def _finish_contact_trace(env, buffers, n_steps):
     foot_names = np.asarray(
         [env._backend.body_names[index] for index in env.feet_indices.cpu().tolist()]
     )
-    buffers.pop("_body_mass")
-    buffers.pop("_body_local_com")
     buffers.update(
         {
             "time": np.arange(n_steps + 1, dtype=np.float64) * float(env.cfg.sim_dt),
@@ -622,6 +617,7 @@ def run(args):
         args.out,
         probe=args.probe,
         label=label,
+        body_state_reference_point="com",
         ctrl_hz=float(getattr(env.cfg.control, hz_key)),
         duration=np.float64(duration),
         **data,
@@ -694,6 +690,15 @@ def compare(args):
         raise ValueError(
             f"cannot compare {probe!r} with other probe types: {mismatched_probes}"
         )
+    reference_points = {
+        label: str(result["body_state_reference_point"])
+        for label, result in data.items()
+    }
+    if len(set(reference_points.values())) != 1:
+        raise ValueError(
+            "cannot compare body states at different reference points: "
+            f"{reference_points}. Re-record the probes with a common convention."
+        )
 
     def quaternion_angle_error(left, right):
         # Float32 dot products near one lose enough precision to report a
@@ -722,7 +727,7 @@ def compare(args):
         rebound_end = min(len(force), onset + int(round(0.25 / dt)) + 1)
         foot_quat = result["foot_quat"][onset].astype(np.float64)
         sphere_center = np.broadcast_to(
-            FOOT_SPHERE_LOCAL_CENTER, foot_quat.shape[:-1] + (3,)
+            result["foot_collision_offset"], foot_quat.shape[:-1] + (3,)
         )
         q_xyz = foot_quat[..., :3]
         twice_cross = 2.0 * np.cross(q_xyz, sphere_center)

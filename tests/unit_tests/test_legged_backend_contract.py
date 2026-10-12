@@ -282,7 +282,7 @@ class TestLeggedPhysics:
     def test_rigid_body_state_is_current_after_step(self, legged_cpu_backend):
         _assert_rigid_body_state_is_current_after_step(legged_cpu_backend)
 
-    def test_rigid_body_velocity_is_at_published_body_origin(self, legged_cpu_backend):
+    def test_rigid_body_velocity_is_at_published_com(self, legged_cpu_backend):
         import mujoco
 
         backend = legged_cpu_backend
@@ -305,7 +305,7 @@ class TestLeggedPhysics:
                 data,
                 linear_jacobian,
                 angular_jacobian,
-                data.xpos[native_id],
+                data.xipos[native_id],
                 int(native_id),
             )
             linear_velocity = linear_jacobian @ data.qvel

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from scripts.compare_backend_unapplied_actions import (
     BACKENDS,
@@ -66,9 +67,11 @@ def test_cell_command_propagates_zero_torque_mode(tmp_path):
     assert command[command.index("--mujoco-solref") + 1 :] == ["0.005", "1.0"]
 
 
-def test_protocol_validation_rejects_nonzero_environment_actions():
-    artifact = {
-        "schema_version": np.int64(1),
+@pytest.fixture
+def artifact():
+    return {
+        "schema_version": np.int64(4),
+        "body_state_reference_point": np.asarray("com"),
         "task": np.asarray("go2trot"),
         "checkpoint_sha256": np.asarray("hash"),
         "checkpoint_iteration": np.int64(1000),
@@ -100,6 +103,23 @@ def test_protocol_validation_rejects_nonzero_environment_actions():
         "actuated_dof_names": np.asarray(["joint"]),
         "environment_actions": np.zeros((2, 1), dtype=np.float32),
     }
+
+
+@pytest.mark.parametrize("reference_point", ["com", "model_origin", None])
+def test_protocol_validation_requires_com_state(artifact, reference_point):
+    candidate = artifact.copy()
+    if reference_point is None:
+        del candidate["body_state_reference_point"]
+    else:
+        candidate["body_state_reference_point"] = np.asarray(reference_point)
+    if reference_point == "com":
+        validate_protocol(artifact, candidate)
+    else:
+        with pytest.raises(ValueError, match="regenerate legacy or unlabelled"):
+            validate_protocol(artifact, candidate)
+
+
+def test_protocol_validation_rejects_nonzero_environment_actions(artifact):
     candidate = {key: value.copy() for key, value in artifact.items()}
     candidate["environment_actions"][1, 0] = 0.1
 

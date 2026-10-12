@@ -1,11 +1,13 @@
 """vsim (vlearn) backend — CUDA-only batched physics engine.
 
-Convention sheet (all spike-verified 2026-07-12, see q2-backend-integration):
+Native conventions (covered by backend frame, reset and contact tests):
 - Quaternions scalar-last [x,y,z,w] like the task layer; transform buffers
   are [qx,qy,qz,qw, px,py,pz] (quaternion FIRST) — reorder only, no swizzle.
 - Velocity buffers are [ang(3), lin(3)] (measured; the vendor stub is
   misleading).  Constants VEL_ANG / VEL_LIN below are the only place this
-  knowledge lives.
+  knowledge lives. Native and public linear velocities are at link centers
+  of mass. Public positions use the same point, with model/link orientation
+  axes. Root setters require a MODEL pose but a COM velocity.
 - Contact forces come from per-link `flags="contact"` force sensors injected
     by vsim_asset; sensor buffers are [force(3), torque(3)] in sensor/link
     axes despite requesting the environment frame, so refresh rotates them to
@@ -38,6 +40,7 @@ from gym.envs.base.robot_layout import RobotLayout
 from gym.envs.base.sim_backend import SimBackend
 from gym.envs.base.urdf_limits import parse_urdf_limits
 from gym.envs.base.vsim_asset import ensure_vsim_asset
+from gym.utils.torch_quat import quat_apply
 from gym import GYM_ROOT_DIR
 
 import numpy as np
@@ -341,8 +344,13 @@ class VSimBackend(SimBackend):
         init = getattr(cfg, "init_state", None)
         pos = list(getattr(init, "pos", [0.0, 0.0, 0.0]))
         rot = list(getattr(init, "rot", [0, 0, 0, 1]))
+        root_com_offset = art_def.get_link_def(0).body_to_model.p
+        model_orientation = v.Quat(*rot)
+        model_position = v.Vec3(*pos)
+        if self._has_free_joint:
+            model_position -= model_orientation.rotate(root_com_offset)
         self._art_h = env_def.create_articulation(
-            art_def_h, v.Transform(v.Quat(*rot), v.Vec3(*pos))
+            art_def_h, v.Transform(model_orientation, model_position)
         )
 
         has_plane = (
@@ -424,6 +432,13 @@ class VSimBackend(SimBackend):
         self._canonical_to_native_body = torch.tensor(
             canonical_to_native_body, dtype=torch.long, device=device
         )
+        self._root_com_offset = torch.tensor(
+            [[root_com_offset.x, root_com_offset.y, root_com_offset.z]],
+            dtype=torch.float,
+            device=device,
+        )
+        # Kinematic root commands select native link 0, not canonical body 0.
+        self._root_body_index = canonical_to_native_body.index(0)
         nominal_mass_native = torch.tensor(
             [art_def.get_link_def(i).mass for i in range(self._num_native_bodies)],
             dtype=torch.float,
@@ -567,29 +582,27 @@ class VSimBackend(SimBackend):
         # GET command buffers (contiguous; wrap_gpu_buffer rejects views)
         self._jp_get = torch.zeros(N, nd, device=dev)
         self._jv_get = torch.zeros(N, nd, device=dev)
-        self._root_tf_get = torch.zeros(N, 1, 7, device=dev)
-        self._root_vel_get = torch.zeros(N, 1, 6, device=dev)
+        self._link_com_tf = torch.zeros(N, native_L, 7, device=dev)
+        self._link_vel = torch.zeros(N, native_L, 6, device=dev)
         aks_get = grp.create_articulation_kinematic_state_command(
             v.wrap_gpu_buffer(self._jp_get),
             v.wrap_gpu_buffer(self._jv_get),
-            v.wrap_gpu_buffer(self._root_tf_get),
-            v.wrap_gpu_buffer(self._root_vel_get),
+            v.wrap_gpu_buffer(self._link_com_tf),
+            v.wrap_gpu_buffer(self._link_vel),
             self._art_h,
             (0, nd),
-            (0, 1),
+            (0, native_L),
+            transform_type=v.TransformType.COM,
         )
         self._aks_get_arr = gym.create_gpu_array([aks_get])
 
         self._link_tf = torch.zeros(N, native_L, 7, device=dev)
-        self._link_vel = torch.zeros(N, native_L, 6, device=dev)
+        # COM transforms carry principal-inertia axes. Keep MODEL orientations
+        # for public quaternions and link-attached contact sensor forces.
         lt = grp.create_link_transform_command(
             v.wrap_gpu_buffer(self._link_tf), self._art_h, (0, native_L)
         )
-        lv = grp.create_link_velocity_command(
-            v.wrap_gpu_buffer(self._link_vel), self._art_h, (0, native_L)
-        )
         self._lt_arr = gym.create_gpu_array([lt])
-        self._lv_arr = gym.create_gpu_array([lv])
 
         # Per-link contact force sensors: one big buffer, slice per sensor.
         # Sensor order is independent of native link and canonical body order.
@@ -699,7 +712,6 @@ class VSimBackend(SimBackend):
         g.compute_kinematics()
         g.get_articulation_kinematic_states(self._aks_get_arr)
         g.get_link_transforms(self._lt_arr)
-        g.get_link_velocities(self._lv_arr)
         g.get_sensor_forces(self._fs_arr)
         self._sync_assembled_states()
 
@@ -711,27 +723,22 @@ class VSimBackend(SimBackend):
         self._dof_vel_view.copy_(
             self._jv_get.index_select(1, self._canonical_to_native_dof)
         )
-        rs = self._root_states_t
-        rtf = self._root_tf_get[:, 0]
-        rvl = self._root_vel_get[:, 0]
-        rs[:, 0:3] = rtf[:, 4:7]
-        rs[:, 3:7] = rtf[:, 0:4]
-        rs[:, 7:10] = rvl[:, VEL_LIN]
-        rs[:, 10:13] = rvl[:, VEL_ANG]
         rbs = self._rigid_body_states_t
         link_tf = self._link_tf.index_select(1, self._canonical_to_native_body)
+        link_com_tf = self._link_com_tf.index_select(1, self._canonical_to_native_body)
         link_vel = self._link_vel.index_select(1, self._canonical_to_native_body)
-        rbs[..., 0:3] = link_tf[..., 4:7]
-        rbs[..., 3:7] = link_tf[..., 0:4]
+        link_quat = link_tf[..., 0:4]
+        rbs[..., 0:3] = link_com_tf[..., 4:7]
+        rbs[..., 3:7] = link_quat
         rbs[..., 7:10] = link_vel[..., VEL_LIN]
         rbs[..., 10:13] = link_vel[..., VEL_ANG]
+        self._root_states_t.copy_(rbs[:, self._root_body_index])
         # Sensor buffers are [force, torque] in the attached sensor/link frame,
         # even when the command requests ENVIRONMENT (verified against static
         # weight). Rotate the canonical link-local forces into world axes to
         # satisfy the SimBackend contact tensor contract.
         sensor_forces = self._sensor_big.index_select(0, self._canonical_body_to_sensor)
         force_local = sensor_forces[:, :, 0:3].permute(1, 0, 2)
-        link_quat = link_tf[..., 0:4]
         q_xyz = link_quat[..., 0:3]
         twice_cross = 2.0 * torch.cross(q_xyz, force_local, dim=-1)
         force_world = (
@@ -754,7 +761,10 @@ class VSimBackend(SimBackend):
         if self._has_free_joint:
             rs = self._root_states_t
             self._root_tf_set[:, 0, 0:4] = rs[:, 3:7]
-            self._root_tf_set[:, 0, 4:7] = rs[:, 0:3]
+            # VSim documents transform_type as getter-only. Setters take a MODEL
+            # pose, while velocity is already at the COM.
+            com_offset_world = quat_apply(rs[:, 3:7], self._root_com_offset)
+            self._root_tf_set[:, 0, 4:7] = rs[:, 0:3] - com_offset_world
             self._root_vel_set[:, 0, VEL_ANG] = rs[:, 10:13]
             self._root_vel_set[:, 0, VEL_LIN] = rs[:, 7:10]
             self._gym.set_articulation_kinematic_states(self._aks_set_arr)

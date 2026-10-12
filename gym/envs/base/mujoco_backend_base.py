@@ -51,6 +51,9 @@ class MuJocoBackendBase(SimBackend):
         self._has_free_joint: bool = False
         self._qpos_offset: int = 0
         self._qvel_offset: int = 0
+        self._root_native_body_index: int | None = None
+        self._root_body_index: int | None = None
+        self._root_com_offset: torch.Tensor = None
 
         # Contact body indices (set by setup)
         self._penalised_contact_indices: torch.Tensor = None
@@ -344,6 +347,16 @@ class MuJocoBackendBase(SimBackend):
         self._canonical_to_native_body = torch.tensor(
             canonical_to_native_body, dtype=torch.long, device=device
         )
+        if self._has_free_joint:
+            self._root_native_body_index = int(mjm.jnt_bodyid[0])
+            self._root_body_index = canonical_to_native_body.index(
+                self._root_native_body_index
+            )
+            self._root_com_offset = torch.tensor(
+                mjm.body_ipos[self._root_native_body_index],
+                dtype=torch.float,
+                device=device,
+            )
         native_position_limits = mjm.jnt_range[jnt_start:].copy()
         limited = mjm.jnt_limited[jnt_start:].astype(bool)
         native_position_limits[~limited, 0] = -np.inf

@@ -35,14 +35,16 @@ def _native_local_velocities(backend, device):
         mujoco.mj_objectVelocity(
             model,
             data,
-            # BODY selects the inertial/COM frame, whose principal axes can
-            # differ from the link axes. XBODY selects the body-origin frame
-            # used by the task's quaternion and body-local observations.
-            mujoco.mjtObj.mjOBJ_XBODY,
+            mujoco.mjtObj.mjOBJ_BODY,
             base_id,
             velocities[index],
-            1,  # Local body frame; angular components precede linear components.
+            0,  # COM motion in world axes; angular precedes linear.
         )
+        # BODY-local output would use the inertial principal axes. Observations
+        # use the retained model/link orientation, independently of that frame.
+        rotation = data.xmat[base_id].reshape(3, 3)
+        velocities[index, :3] = rotation.T @ velocities[index, :3]
+        velocities[index, 3:] = rotation.T @ velocities[index, 3:]
     return torch.tensor(velocities, dtype=torch.float, device=device)
 
 

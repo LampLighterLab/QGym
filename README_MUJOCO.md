@@ -517,6 +517,39 @@ Backend is selected automatically based on `--device`:
 - `cpu` → MuJocoCPUBackend (macOS always uses this)
 - `cuda:0` → MuJocoWarpBackend
 
+### State reference points
+
+MuJoCo CPU, Warp and VSim expose **each link's center of mass** in the position
+and linear-velocity fields of `rigid_body_states`. `root_states` uses the
+**base link's** CoM, not the whole robot's. Positions and velocities are in
+world coordinates; scalar-last orientations retain the original model/link
+axes, not principal-inertia axes. Reset writes follow the same convention;
+the backend converts them to the engine's native root coordinates.
+
+VSim's `transform_type` selects the **getter** convention only; its setters
+always take a `MODEL`-origin pose, while linear velocity is already at the CoM.
+This is documented SDK behavior, not a missing setter option. On reset the
+adapter therefore computes `p_model = p_COM - R_model c`, where `c` is the
+base link's local CoM offset, and passes the requested velocity unchanged.
+
+Consequently, initial root positions/velocities, `base_height`, and
+`base_lin_vel` now refer to the base CoM. Config values and URDFs have not been
+retuned. Identical numeric initial states from an older run need not place
+the collision geometry identically; older policies have not been requalified.
+Geometric points attached to a link must use offsets measured from its CoM.
+In particular, the humanoid's base CoM is about 15.2 cm above its model origin;
+its initialization and height-related settings need review before using this
+checkpoint for training. Go2 foot CoMs coincide with their model origins;
+mini-cheetah/humanoid foot-height and slip metrics change reference point.
+
+New captures use the same convention on every backend. Whole-robot CoM metrics
+mass-weight these link states using the backend's applied link masses, including
+mass DR. The fidelity and unapplied-action tools record the reference point and
+reject incompatible captures; regenerate old/unlabelled unapplied-action
+artifacts before opening the comparison notebook. Matching conventions alone
+do not establish matching physics or policy transfer. See
+[the migration checks and performance plan](MIGRATION_PLAN.md#com-state-migration-test-first-and-speed-recovery-2026-10-08).
+
 ### MuJoCo configuration
 
 Both MuJoCo backends read one `cfg.mujoco` section. Override individual fields

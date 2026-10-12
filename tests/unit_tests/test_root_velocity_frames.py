@@ -16,6 +16,7 @@ import torch
 from tests.unit_tests.conftest import _make_mini_cheetah_cfg, vsim_guard
 
 from gym.envs.base.mujoco_backend_base import MuJocoBackendBase
+from gym.envs.go2.go2_config import Go2Cfg
 
 
 NUM_ENVS = 4
@@ -30,6 +31,9 @@ BACKENDS = [
 @pytest.fixture(params=BACKENDS)
 def backend(request):
     cfg = _make_mini_cheetah_cfg(sim_dt=DT)
+    # Go2's root CoM is offset from its model origin; mini_cheetah's coincident
+    # origins cannot expose a matching COM-velocity mistake in reset and readback.
+    cfg.asset = Go2Cfg().asset
     cfg.sim.gravity = [0.0, 0.0, 0.0]
     cfg.asset.joint_damping = 0.0
     cfg.init_state = SimpleNamespace(pos=[0.0, 0.0, 5.0], rot=[0.0, 0.0, 0.0, 1.0])
@@ -48,6 +52,16 @@ def backend(request):
         instance, device = VSimBackend(), "cuda:0"
     try:
         instance.setup(cfg, num_envs=NUM_ENVS, device=device, task=None)
+        posture = {
+            f"{leg}_{joint}_joint": angle
+            for leg in ("FL", "FR", "RL", "RR")
+            for joint, angle in (("hip", 0.0), ("thigh", 0.66), ("calf", -1.36))
+        }
+        instance.dof_pos[:] = torch.tensor(
+            [posture[name] for name in instance.dof_names], device=device
+        )
+        # Root-only commits must start with legal native joint positions too.
+        instance.reset_state(_all_mask(instance))
         yield instance
     finally:
         instance.close()
@@ -102,11 +116,47 @@ def _all_mask(backend):
     return torch.ones(NUM_ENVS, dtype=torch.bool, device=backend.device)
 
 
-def _assert_mujoco_native_velocity(backend, expected):
-    # VSim is checked with an engine-independent orientation increment below.
+def _assert_native_velocity(backend, expected):
     from gym.envs.base.mujoco_cpu_backend import MuJocoCPUBackend
 
     if not isinstance(backend, MuJocoBackendBase):
+        import vlearn as v
+
+        # Query native COM and MODEL poses independently of the adapter's caches.
+        center = torch.empty(NUM_ENVS, 1, 7, device=backend.device)
+        model = torch.empty_like(center)
+        velocity = torch.empty(NUM_ENVS, 1, 6, device=backend.device)
+        transforms = [
+            backend._grp.create_link_transform_command(
+                v.wrap_gpu_buffer(buffer),
+                backend._art_h,
+                (0, 1),
+                transform_type=frame,
+            )
+            for buffer, frame in (
+                (center, v.TransformType.COM),
+                (model, v.TransformType.MODEL),
+            )
+        ]
+        command = backend._grp.create_link_velocity_command(
+            v.wrap_gpu_buffer(velocity), backend._art_h, (0, 1)
+        )
+        backend._gym.get_link_transforms(backend._gym.create_gpu_array(transforms))
+        backend._gym.get_link_velocities(backend._gym.create_gpu_array([command]))
+        torch.testing.assert_close(
+            center[:, 0, 4:7], expected[:, :3], atol=2e-6, rtol=0
+        )
+        torch.testing.assert_close(
+            velocity[:, 0], expected[:, [10, 11, 12, 7, 8, 9]], atol=2e-6, rtol=1e-5
+        )
+        for state, transform in zip(
+            expected.cpu().numpy(), model[:, 0].cpu().numpy(), strict=True
+        ):
+            rotation = _rotation(state[3:7])
+            np.testing.assert_allclose(_rotation(transform[:4]), rotation, atol=2e-6)
+            # Source Go2 URDF offset, not a cached production conversion tensor.
+            origin = state[:3] - rotation @ np.array([0.021112, 0.0, -0.005366])
+            np.testing.assert_allclose(transform[4:7], origin, atol=2e-6)
         return
     if isinstance(backend, MuJocoCPUBackend):
         pairs = [(backend._model_for_env(i), d) for i, d in enumerate(backend._datas)]
@@ -124,9 +174,10 @@ def _assert_mujoco_native_velocity(backend, expected):
     for i, (model, data) in enumerate(pairs):
         body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base")
         velocity = np.empty(6)
-        # XBODY is the body-origin frame; BODY uses the inertial/COM origin.
+        # MuJoCo publishes COM motion, but retains the link's orientation.
+        # World-frame BODY velocity avoids rotating into the inertial axes.
         mujoco.mj_objectVelocity(
-            model, data, mujoco.mjtObj.mjOBJ_XBODY, body_id, velocity, 0
+            model, data, mujoco.mjtObj.mjOBJ_BODY, body_id, velocity, 0
         )
         np.testing.assert_allclose(
             velocity,
@@ -170,7 +221,7 @@ def _step_and_check(backend, before):
     backend.step(torch.zeros(NUM_ENVS, backend.num_dof, device=backend.device))
     _assert_world_rotation_increment(before, root)
     _assert_root_body_velocity(backend, root, bodies)
-    _assert_mujoco_native_velocity(backend, root)
+    _assert_native_velocity(backend, root)
 
 
 @pytest.mark.parametrize("commit", ["reset_state", "set_all_root_states"])
@@ -180,7 +231,7 @@ def test_rotated_root_reset_accepts_world_velocity(backend, commit):
         backend.reset_state(_all_mask(backend))
     else:
         backend.set_all_root_states()
-    _assert_mujoco_native_velocity(backend, expected)
+    _assert_native_velocity(backend, expected)
     torch.testing.assert_close(backend.root_states[:, 7:13], expected[:, 7:13])
     _assert_root_body_velocity(
         backend,
@@ -208,7 +259,7 @@ def test_partial_reset_uses_new_orientation_and_preserves_other_environments(bac
     mask[selected] = True
     backend.reset_state(mask)
 
-    _assert_mujoco_native_velocity(backend, expected)
+    _assert_native_velocity(backend, expected)
     torch.testing.assert_close(cached_root, expected, atol=2e-6, rtol=1e-5)
     _step_and_check(backend, expected)
 
@@ -227,7 +278,7 @@ def test_step_updates_cached_world_root_and_body_velocities(backend):
         assert not torch.allclose(cached_root[:, 3:7], before[:, 3:7])
         _assert_world_rotation_increment(before, cached_root)
         _assert_root_body_velocity(backend, cached_root, cached_bodies)
-        _assert_mujoco_native_velocity(backend, cached_root)
+        _assert_native_velocity(backend, cached_root)
         before = cached_root.clone()
     assert backend.root_states.data_ptr() == root_ptr
     assert backend.rigid_body_states.data_ptr() == body_ptr

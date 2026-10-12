@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<robot name="offset_com">
+  <link name="base">
+    <inertial>
+      <origin xyz="0.13 -0.09 0.07" rpy="0.3 -0.2 0.4"/>
+      <mass value="2"/>
+      <inertia ixx="0.04" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.06"/>
+    </inertial>
+    <collision>
+      <geometry><box size="0.12 0.1 0.08"/></geometry>
+    </collision>
+  </link>
+  <link name="arm">
+    <inertial>
+      <origin xyz="0.18 0.04 -0.11" rpy="-0.2 0.4 0.3"/>
+      <mass value="1"/>
+      <inertia ixx="0.015" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.025"/>
+    </inertial>
+    <collision>
+      <origin xyz="0.1 0 0"/>
+      <geometry><box size="0.2 0.06 0.06"/></geometry>
+    </collision>
+  </link>
+  <joint name="hinge" type="revolute">
+    <parent link="base"/>
+    <child link="arm"/>
+    <origin xyz="0.4 0.05 -0.03"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2" upper="2" effort="20" velocity="10"/>
+  </joint>
+</robot>

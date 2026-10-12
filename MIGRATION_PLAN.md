@@ -37,6 +37,461 @@ origins are preserved; the vendor's physical model is not adopted. XML/path
 tests cover this without vendor binaries. Native VSim rendering still needs
 verification on a CUDA-capable host.
 
+## CoM state migration: test-first and speed recovery (2026-10-08)
+
+**Target:** publish each link's CoM position and linear
+velocity together, while retaining its original model/link orientation axes
+and world angular velocity. `root_states` refers to the **base link's** CoM,
+not the whole robot's. Keep scalar-last quaternions, canonical ordering, live
+buffers and one atomic masked reset. Leave the URDFs unchanged. **Current
+checkpoint (2026-10-11):** MuJoCo CPU, Warp and VSim implement this convention.
+Native-frame tests establish the common interface, not matching contact
+physics or policy transfer. Quiet-host measurements and follow-up diagnosis
+are complete. The VSim reset overhead is accepted; full MuJoCo task/step
+performance qualification remains open. See the
+[diagnosis and next checks](#reset-cost-and-physical-equivalence-diagnosis-2026-10-11);
+do not infer a speed pass from correctness.
+
+The original target included recovering the VSim cost introduced by the velocity fix;
+passing the ordinary 5% regression gate alone will **not** establish recovery.
+Do not trade correctness, reset freshness or other engines' speed for a better
+VSim number. This is a state-interface migration, not reward tuning or a change
+to the physical robot. The protocol and historical checkpoints below retain that
+original target; the acceptance decision below supersedes further reset-recovery
+work for this migration.
+
+### Small, discriminating correctness suite
+
+Add one shared fixture in `tests/unit_tests/test_body_com_state.py`: a small
+floating two-link mechanism, with nonzero base and child CoM offsets, a moving
+hinge, rotated nonspherical inertias, and canonical body order different from
+native order (including a root that is not canonical slot zero). Use analytic
+forward kinematics from known fixture constants, not production transform
+helpers or the adapter's cached offsets. Run the same four contracts on CPU,
+Warp and licensed VSim; keep these integration tests out of colocated suites.
+
+| Contract | Independent check | Bug excluded |
+| --- | --- | --- |
+| CoM pose with model axes | Analytic link pose gives `p_COM = p_origin + R_model c`; compare model rotation matrices, plus native CoM position as a separate cross-check. Test immediately after setup and reset. | Origin mistaken for CoM; whole-robot CoM substituted for base CoM; principal-inertia axes exposed as link orientation; wrong canonical body mapping. |
+| Articulated CoM velocity | Nonzero root linear/angular velocity **and joint velocity**; compare analytic point velocity with central differences of prescribed nearby kinematic poses. Also inspect cached state after a real step. | Missing joint contribution; incorrect MuJoCo `cvel` reference; mixed position/velocity points; stale state. |
+| Atomic reset and physical placement | Simultaneously change root position/orientation/velocity and joints. Independently inspect native model origins and attached geometry using `p_origin = p_COM - R_model c`. Exercise empty, single, noncontiguous and full masks, plus the root-only API. | Matching read/write errors that cancel in a round trip; old orientation used on reset; geometry moved; unselected environments changed; a hidden integration step. |
+| Link-mass DR and CoM identity | Prescribe identical physical poses and velocities under nonuniform startup link-mass scaling. Individual link CoM state stays unchanged; independently mass-weighted whole-robot CoM changes. | Tree/subtree CoM confused with link CoM; stale mass-dependent native reference; hard-coded nominal total mass. |
+
+The velocity oracle is `v_COM = v_origin + omega_world × (R_model c)`.
+For moving joints, obtain `v_origin` from independent articulated kinematics,
+not the rigid-assembly identity alone. Differentiate prescribed poses without
+stepping physics so integration error and acceleration cannot mask a bad
+transform. Choose finite-difference spacing/tolerance in advance, verify
+convergence above the float32 noise floor, and retain tight native-oracle
+tolerances. Compare rotations rather than quaternion signs. Deliberately wrong
+origin/CoM and model/inertial-axis substitutions must fail the corresponding
+tests; no blanket tolerance widening or new expected failures.
+
+Extend existing coverage rather than duplicate it:
+
+- `test_backend_admission.py`: retain rigid-assembly consistency, free fall,
+  masked isolation and persistent aliases. A coherent origin-based state also
+  passes that rigid-assembly equation, so it is not proof of CoM semantics.
+- `test_root_velocity_frames.py`: retain Go2's offset root, both reset APIs,
+  angular increments and cached readback; add independent native CoM position
+  **and model-origin placement** checks. Retain CPU reset-liveness coverage.
+- `test_legged_backend_contract.py`: move the Jacobian oracle's evaluation
+  point to the body CoM, not just the name of its assertion.
+- `test_root_velocity_observation.py`: read world CoM velocity independently,
+  then rotate by model/link axes. MuJoCo `BODY` with local output uses inertial
+  axes; it is not a drop-in replacement for the current `XBODY` local oracle.
+- Task/evaluation checks: explicitly preserve geometric foot points, initial
+  collision placement and clearance. Update base-height/velocity observations,
+  tracking rewards and `system_cog` without applying a CoM offset twice. Reuse
+  contact routing, world-force/static-support and slip tests; rotated inertias
+  must not rotate contact forces into the wrong axes. Record expected semantic
+  changes instead of claiming old rewards/checkpoints are numerically identical.
+
+### Performance acceptance: two references, one physical workload
+
+Retain the original M0 artifacts under `logs/physx_migration/m0_20261006/`.
+The sparse-reset reference was 225.34 us before the fix versus 252.23 us after
+it; full-task slowdown was 1.59–1.70%. These historical numbers motivate the
+target, but are not a substitute for comparable fresh captures.
+
+Use three separately fingerprinted versions: **F**, fast pre-fix VSim (timing
+reference only, not correct public-state evidence); **S**, current corrected
+origin-state implementation; and **C**, the CoM-state candidate. Do not revert
+the user's worktree to collect F or S. Freeze copies outside the working tree.
+
+Before recapturing, make the benchmark express initial conditions and reset
+requests in a fixed *physical model-origin* convention, encoding public state
+only at its input boundary. Compare independent native model poses/velocities,
+joint state, geometric foot positions, applied inputs and the reset schedule.
+Record physical evidence outside timing. Keep production state refreshes and
+resets inside timing; do not hide required conversions in benchmark setup.
+Control references must produce equivalent physical inputs throughout the
+timed task trajectory, not merely start at the same printed root position.
+
+The current comparator checks raw `root_states` and exact config equality;
+these are insufficient across a convention change. Introduce explicit physical
+workload metadata and narrowly audited representation differences, with tests
+that accept equivalent re-encoding but reject changed geometry, timestep,
+torques or reset masks. Keep harness/asset fingerprint checks: use the **same
+frozen revised harness** for all three fresh captures, not an override accepting
+incompatible old JSON. Preserve old evidence unchanged.
+
+- Primary cells: Go2Trot, 4,096 environments, 100 Hz control/physics, seed 7,
+  DR off, one Torch thread, one native VSim environment set; backend step,
+  full task with empty masks, full task with staggered timeouts, and sparse
+  atomic reset. Keep the empty-mask reset call in every version.
+- Predeclare 18 independent F/S/C process triplets: three cycles of all six
+  execution orders. Use 100 warmup calls and three timed batches per process;
+  start with the calibrated 300 step/task calls and 5,000 reset calls per batch. Increase short
+  batches consistently across versions before freezing the protocol. No other
+  GPU work or native builds during captures. Profile separately from timing.
+- Report per-cell absolute microseconds, `C/F`, `C/S` and paired-process
+  bootstrap 95% intervals. Demonstrated full recovery requires the upper
+  interval for `C/F` to be <= 1.00; improvement over S requires the upper
+  interval for `C/S` to be < 1.00. An interval straddling 1 is inconclusive,
+  even if the point estimate looks good. Equal speed can remain inconclusive
+  under this deliberately strict recovery test; do not label a 5% pass as
+  full recovery. Do not pool workloads or count timed batches as independent.
+  If inconclusive, design another fixed capture rather than sampling until a
+  passing interval appears.
+- Retain the existing 5% no-regression gate on every engine, including MuJoCo
+  CPU (256 environments) and Warp (4,096), with real before/after captures under
+  the same revised workload. Exercise DR correctness separately; do not mix
+  DR overhead into the nominal speed-recovery comparison.
+
+### Reviewable checkpoints
+
+1. **Test design and baseline (this checkpoint):** agree the contracts above,
+   audit existing oracles and rerun the focused current-convention tests.
+   No runtime migration or speed-recovery claim yet.
+2. **Independent tests and frozen workload:** implement the asymmetric fixture,
+   native/analytic checks and physical-equivalence benchmark metadata. Prove
+   the oracles on the existing convention, archive F/S sources and calibrate
+   the workload before migration. Final paired captures wait for all three
+   versions so execution order can be balanced.
+3. **CoM interface migration:** update MuJoCo CPU/Warp first, then VSim, with
+   reset inputs and affected consumers; change the public-point assertions deliberately.
+   No compatibility switches or long-lived xfails. Run focused, full portable,
+   colocated and GPU suites, then compare same-physical-state task outputs.
+4. **Recovery and handoff:** capture F/S/C using the frozen protocol; profile
+   and optimize only if needed. Repeat correctness after optimization. Present
+   correctness and both performance comparisons; keep unresolved recovery or
+   other-engine regressions visible. Update the public contract and developer
+   guidance when the migration actually lands, not ahead of implementation.
+
+Pre-migration validation: the existing admission and root-frame tests were rerun
+on 2026-10-08: CPU 7 passed, Warp 7 passed (existing MULTICCD warnings), licensed
+VSim 7 passed. These prove the origin-state baseline only.
+
+### MuJoCo checkpoint (2026-10-08)
+
+The MuJoCo implementation added the four asymmetric-fixture contracts above,
+including independently checked collision placement, moving-joint derivatives,
+root-last canonical ordering and nonuniform link-mass DR. All four CPU cases
+failed before the implementation and pass afterward (artifacts:
+`logs/physx_migration/com_state_20261008/`). CPU/Warp publish `xipos`, translate
+tree-referenced `cvel` to each link CoM, and keep `xquat` model axes. Both root
+commit APIs translate requested CoM position/velocity using the **new**
+orientation. Root readback reuses the canonical base-body row rather than
+reassembling a second root state. Warp initializes native derived state before
+publishing setup buffers.
+
+At that checkpoint, whole-robot CoM evaluation and mini-cheetah collision
+clearance avoided double offsets and recorded the state reference point in
+artifacts. The fidelity comparator rejected mixed reference points; other
+cross-engine comparisons were not qualified while VSim still used origins.
+Unchanged config values described MuJoCo base-CoM height/velocity, so old
+checkpoints were not claimed numerically equivalent. The VSim migration and
+F/S/C speed-recovery campaign were still pending (continuation below).
+
+Consumer audit: Go2's foot CoMs coincide with model origins; Go2Trot and
+mini-cheetah oscillator rewards use contacts/joints/phase rather than geometric
+foot positions. Mini-cheetah foot CoMs are 24 mm above model origins, so the
+fidelity collision-center offset was adjusted explicitly. Generic foot-height
+and slip metrics now refer to foot CoMs. Humanoid base CoM is 151.7 mm above
+its origin; initialization, height targets and height-based termination require
+deliberate task review/retuning. No automatic task-parameter offsets or policy
+compatibility layer were introduced in this backend checkpoint.
+
+Validation for this MuJoCo checkpoint:
+
+- Portable suite: **366 passed, 105 deselected, 1 existing xfailed**; colocated
+  `gym` **35 passed**, `learning` **6 passed**. Full Ruff and `git diff --check`
+  pass. The portable gate includes the CPU train/checkpoint smoke tests.
+- Warp: **38 passed**, including all four new CoM contracts; 21 existing
+  MULTICCD unsupported-pair warnings. The first attempt to initialize setup
+  with a complete host forward pass exposed 340 constraints at Go2's temporary
+  zero pose versus `njmax=256`. Setup now initializes kinematics only, before
+  the task's first reset; the configured constraint capacity is unchanged.
+  Failed and passing captures are retained under
+  `logs/physx_migration/com_state_20261008/`.
+- Licensed VSim: **50 passed**, no warnings; its runtime implementation and
+  origin-based semantics were not changed in this checkpoint.
+- The revised benchmark records all native MuJoCo `qpos/qvel` values before
+  and after each batch, with explicit model-origin physical reset recipes,
+  fixed inputs/reset masks and unchanged source-fingerprint checks. A short
+  four-profile before/after correctness run passed the predeclared equivalence
+  tolerances on CPU (256 environments) and Warp (4,096): CPU maximum initial
+  `qpos` difference **1.47e-6**, final `qpos` **1.47e-6**, final `qvel`
+  **3.01e-6**; Warp initial native state matched exactly, final `qpos`
+  **1.53e-5**, final `qvel` **3.37e-4**, with exact sparse-reset state. These
+  are maximum absolute native-coordinate differences across all environments,
+  **not performance evidence**. Reports are
+  `logs/com_state_migration_20261008/physics_{cpu,warp}_comparison.json`.
+- The five-process timing capture was stopped after unrelated concurrent
+  VLGym sweep jobs caused large timing changes. Those jobs were left untouched.
+  **No MuJoCo performance pass or VSim speed recovery is claimed.** Invalid
+  captures and quiet-host rerun commands are recorded in
+  `logs/com_state_migration_20261008/INVALID_TIMING.md`; source baseline is
+  was frozen at `/tmp/qgym-com-before-raUPxp` (since removed; reconstructed
+  references are recorded below). Complete the clean 5% CPU/Warp gate
+  before promoting this checkpoint, then the VSim F/S/C recovery campaign
+  after its matching implementation.
+
+### Unified CoM checkpoint (2026-10-11)
+
+VSim now publishes native link CoM positions and velocities together, retaining
+MODEL orientations for public quaternions and link-attached contact forces.
+One articulation-state getter fetches all link CoM transforms/velocities and
+joint states; the separate MODEL-transform getter supplies model axes. The
+redundant velocity getter and per-link `omega × offset` conversion are gone.
+Root state reuses the canonical base row. Initial floating-base placement and
+both reset APIs translate requested CoM position to MODEL position using the
+requested orientation; velocity is already in VSim's native CoM convention.
+The SDK documents `transform_type` as getter-only: setters always take MODEL
+poses, so using native CoM velocity does not eliminate reset-position conversion.
+See `EnvironmentGroup.create_articulation_kinematic_state_command` in the local
+SDK API reference (`thirdparty/vlearn/docs/vlearn-docs/html/api.html`).
+No new host/device copies, mask-index conversions or native reset calls were
+introduced. URDFs and task tuning remain unchanged.
+
+All four asymmetric contracts now also run on VSim. The eight focused VSim
+CoM/root-frame cases failed before the fix and pass afterward; the complete
+licensed suite passes **54 tests**, including fixed/floating base, contacts,
+DR, reset isolation and liveness. Evidence: `logs/com_migration_vsim_{red,green,full}.xml`.
+One deliberately bit-exact assertion exposed preexisting VSim rounding:
+getters alone are stable, but native `compute_kinematics()` changes poses and
+velocities by roughly 0.06–0.30 micro-units without any setter, on both old
+and new implementations. Only recomputed VSim body/root isolation uses a
+`1e-6` absolute bound; joints and CPU/Warp isolation remain exact and all
+analytic/native CoM tolerances are unchanged. Probe evidence:
+`logs/com_migration_native_roundoff.md`.
+
+The final sequential gates pass: **374 portable tests** (one existing xfail),
+**38 Warp tests**, **54 VSim tests**, **35 colocated gym tests** and **6 learning
+tests**, plus Ruff. Warp retains its 21 known MULTICCD warnings. JUnit evidence
+is in `logs/com_migration_{portable_full,warp_full,vsim_full,gym,learning}.xml`.
+The comparison notebook also passes Marimo's static parsing, cell compilation
+and dependency-graph validation; its high-level check CLI stalled, and no
+rendered-notebook validation is claimed.
+
+Consumers now use direct per-world, applied `backend.link_mass` weighting for
+whole-robot CoM position/velocity, including mass DR. Temporary backend-type
+branches and zero-offset transforms were removed. Geometric foot points still
+subtract their local CoM offset. New unapplied-action artifacts and their
+comparison notebook explicitly require CoM metadata; regenerate unlabelled or
+origin-based captures rather than silently comparing different points. Old
+policies and humanoid height/end-effector settings remain unqualified until
+deliberately reviewed. A common state convention is not contact-model parity.
+
+At this checkpoint the user had two concurrent jobs on this host. Validation
+was kept small and sequential; **large performance captures were held**. The benchmark reads
+independent native VSim MODEL transforms, CoM velocities and joint state outside
+timing, just as it reads native MuJoCo `qpos/qvel`. Its explicit F/S/C reset
+encoding preserves one physical model-origin workload, including spinning
+resets; it never treats F's incorrect public velocity as an oracle. Config,
+input, reset-mask and source fingerprints remain checked.
+
+New frozen references and the unchanged deferred 18-triplet recovery/5% gates
+are documented in `logs/com_state_migration_20261011/PROTOCOL.md`. The rebuilt
+pre-CoM MuJoCo files match the retained Oct 8 baseline hashes exactly. Current
+snapshot paths are `/tmp/qgym-com-origin-W8k4Ug` (S),
+`/tmp/qgym-com-fast-PZKuYh` (F), and
+`/tmp/qgym-com-mujoco-before-xpFkSx` (MuJoCo reference). No licenses or vendor
+binaries were copied. The final candidate is frozen at
+`/tmp/qgym-com-candidate-frozen-harness-UZIFnw` (C2), with the exact F/S harness.
+
+Tiny four-environment F/S/C2 comparisons pass all five physical workloads:
+backend step, task step without resets, task timeout scheduling, sparse backend
+reset and sparse task reset. Initial native states match exactly; final native
+velocities and joints also match exactly. The largest final transform-component
+difference is `2.98e-8`, in the sparse backend reset. The short timeout workload
+does not actually reach a timeout, so it is not evidence of timeout-reset parity.
+Strict source/config/input checks and the predeclared tolerances were retained.
+Failed license-path starts and an initial harness-mismatch comparison remain
+documented in the protocol; neither was accepted as evidence.
+
+These comparisons are correctness-only: one process pair per workload correctly
+reports `insufficient_pairs` for performance. Consequently,
+**VSim speed recovery and clean CPU/Warp performance gates remain pending**.
+
+### Quiet-host timing follow-up (2026-10-11)
+
+Host-level process and GPU checks confirmed the training/sweep jobs had ended:
+roughly 49 GiB RAM and 14 GiB VRAM were available. Desktop/editor services remain;
+their GPU activity is recorded, not described as a completely idle GPU. Captures
+run sequentially and stop if another Python or GPU compute workload appears.
+
+The first full-size calibration exposed a benchmark confound: physical reset
+encoding happened **after** task construction, but construction itself performs
+one real physics step. Thus matching recorded initial states did not establish
+matching solver/contact history. The revised harness encodes the same physical
+pose/twist before construction, records both physical and actual runtime configs,
+and validates that only the declared reference-point encoding differs. Native
+VSim COM transforms now supplement MODEL transforms and COM velocities. Production
+backends and physical-comparison tolerances are unchanged. Failed calibration
+artifacts remain under `logs/com_speed_20261011/calibrate/`; they are not speed
+passes or proof of a backend bug.
+
+Batch calibration retains 5,000 sparse-reset calls for VSim/CPU but reduces Warp
+to 150 calls in **both** cohorts: 5,000 Warp resets took about 39 seconds per batch,
+far above the approximately one-second target. Warmup, three measured batches,
+independent-process counts, balanced order, and acceptance thresholds are retained.
+No old calibration timings are reused in the revised campaign.
+
+The corrected-startup VSim discriminator (4,096 environments, 100 warmup calls,
+three 300-step batches) passes with **bitwise-identical native initial and final
+states** across F/S/C, including all MODEL/COM transforms, velocities and joint
+states. This isolates the startup-history confound for that workload; it does
+not establish every long task trajectory. The single triplet is calibration
+only, not statistical performance evidence. Source-frozen artifacts and the
+subsequent fixed campaign live under `logs/com_speed_startup_20261011/`.
+
+The full VSim campaign completed all **72 triplets** (18 independent comparisons
+per workload), with every physical/config/source check passing. Positive changes
+below mean slower; intervals are process-paired 95% bootstrap intervals.
+
+| Workload, 4,096 environments | C versus fast mixed-reference F | C versus corrected origin S |
+| --- | --- | --- |
+| Backend step | +0.50% [+0.24%, +0.90%] | +0.26% [-0.14%, +0.52%] |
+| Task step, empty reset mask | +0.74% [+0.40%, +1.05%] | -0.93% [-1.13%, -0.71%] |
+| Task step, scheduled timeouts | +0.66% [+0.29%, +0.90%] | -1.23% [-1.51%, -1.11%] |
+| Sparse backend reset | +9.11% [+8.33%, +9.47%] | -2.33% [-2.99%, -2.11%] |
+
+Thus all three stepping workloads pass the 5% gate, but **sparse resets fail it**.
+The strict full-recovery gate is not met for any workload. Relative to S, task
+stepping and resets improve; isolated stepping shows no statistically resolved
+improvement. Median sparse-reset latency is F **231.2 us**, S **258.1 us**, and C
+**251.9 us** per call. These are simulation/reset measurements with DR disabled,
+not full PPO throughput or learning-quality results.
+
+MuJoCo CPU (256 environments) completes five valid pairs each for backend stepping
+and sparse resets. Paired latency falls **28.45%** [28.25%, 28.89%] and **32.03%**
+[31.25%, 33.58%], respectively; both pass the 5% gate. However, both task-stepping
+variants fail the unchanged final native-state tolerance (`qpos` maximum absolute
+coordinate difference `0.0533536`). Their timings are **incomparable**, not passes;
+the failed artifacts are retained and further repetitions of those cells are
+skipped by the predeclared gate. No overall CPU task-performance pass is claimed.
+
+Warp (4,096 environments) completes five valid sparse-reset pairs: latency falls
+**0.74%** [0.55%, 1.28%], passing the 5% gate. All three stepping workloads fail
+native final-state comparison and remain unqualified. Diagnostics across all
+three measured batches distinguish coordinates: CPU's worst task difference is
+**0.053354 rad** at native joint 9; Warp's backend-step difference is
+**0.00029734 rad** at native joint 9. Warp task cases instead have maximum root
+quaternion-component differences of **0.64555** and **0.49322**; these are not
+distances or angles. CPU initial translation differs by at most **1.465e-6 m**
+(within the declared float32 bound), whereas Warp's recorded initial `qpos/qvel`
+match exactly. Do not attribute all later divergence to visible initial rounding.
+The cause of those MuJoCo trajectory differences remains open.
+
+The campaign finished in **142.2 minutes**: 87 valid comparisons, five physical
+qualification failures, and 20 subsequent repetitions skipped by the predeclared
+gate (112 planned comparisons). It was not stopped based on timing outcomes.
+The detailed tables, physical diagnostics, provenance and artifact recovery notes
+are in `logs/com_speed_startup_20261011/RESULTS.md`. Valid raw JSON is preserved
+byte-for-byte in verified gzip archives; failed captures remain intact. The
+worktree's 143 captured source fingerprints match the final frozen candidate.
+Credential-free source/assets for all four cohorts are preserved in that result
+directory's `source_archives/`, with archive digests and verified source hashes.
+
+Final post-capture validation: **378 portable tests**, **35 colocated gym tests**,
+and **6 learning tests** pass, with one existing xfail and 109 default-suite
+deselections. Full Ruff, touched-file formatting and `git diff --check` pass.
+The benchmark startup encoding changed; production backends did not change in
+this timing follow-up. Prior CPU/Warp/VSim contract evidence above remains
+separate from these performance/trajectory qualifications. At this checkpoint,
+VSim reset recovery and full MuJoCo task/step performance sign-off remained open;
+the later acceptance decision is recorded below.
+
+### Reset-cost and physical-equivalence diagnosis (2026-10-11)
+
+Follow-up probes use the archived cohorts and preserve the failed campaign
+captures and tolerances. No production backend changes were made. Artifacts are
+under `logs/com_diagnosis_20261011/`.
+
+**VSim:** the remaining reset cost is adapter conversion/readout work, not another
+native reset call, mask compaction, CPU transfer, or DR resampling. With 4,096
+worlds and 40 selected resets, current reset latency is about 252 us. Temporarily
+substituting the historical readout saves about 12.4 us; additionally precomputing
+the fixed MODEL reset position saves about 7.5 us, reaching 232 us versus the
+historical 230–232 us. Independent native MODEL/CoM poses, velocities and joints
+remain bitwise identical between candidate ablations. These are attribution
+probes only: historical readout violates the public CoM contract, and caching is
+valid only for this fixed reset pose. Splitting the getters while preserving the
+full contract did not improve latency. The CoM offset rotation/subtraction and
+additional all-link CoM readout/assembly are the optimization targets; a sparse
+reset currently pays for full-world conversion and refresh. Details and separate
+profiler evidence: `vsim/FINDINGS.md`. These within-process ablations do not
+replace the independent-process performance gate.
+
+**MuJoCo CPU:** both rejected task profiles are explained by initial-coordinate
+rounding: up to 1.465 um in x and 2.447 nm in z after float32 CoM encoding/grid
+placement and float64 native-offset subtraction. The original final difference
+of 0.053354 rad at `RR_hip_joint` is reproduced. Setting only the candidate's
+native initial/reset translations to the reference values, then forwarding,
+makes every recorded position, velocity, applied torque, phase and contact count
+bitwise identical across all 256 worlds and 300 steps. This also holds with all
+76 scheduled timeout resets. It establishes numerical amplification of the
+initial mismatch, not a changed physical model or PD controller. The axes were
+not isolated separately. Details: `cpu/RESULTS.md`.
+
+**MuJoCo Warp:** backend stepping and both task profiles already fail this
+trajectory gate between repeats of the same build. A fresh-process candidate
+control also diverges from identical integration inputs and phase state. More
+directly, repeated native `mjw.forward` calls at fixed positions, velocities,
+warmstart, applied forces, controls, activation, time and sleep state produce
+different constraint-row ordering and small acceleration/force differences,
+despite an identical contact-geometry multiset. This demonstrates native
+floating-point/reduction and constraint-order non-repeatability without the
+CoM adapter in the loop. The contact-rich closed-loop workload amplifies those
+differences; its tight long-horizon maximum-error gate cannot distinguish a
+migration regression from the baseline repeatability floor. Details:
+`warp/RESULTS.md`. This does not prove every possible migration effect absent.
+
+Next qualification should match native initial/reset states exactly and include
+same-build controls, retaining independent short-horizon CoM/velocity/reset
+contract tests. Do not retroactively accept rejected timings or loosen their
+tolerances. This follow-up establishes causes rather than implements fixes.
+The subsequent decision below accepts the VSim reset overhead; MuJoCo task/step
+performance sign-off remains open.
+
+Post-diagnosis validation: 378 portable tests pass (one existing xfail), 41
+colocated tests pass, and focused CoM/reset checks pass on CPU (15), Warp (8),
+and VSim (8). Ruff and `git diff --check` pass. An initial direct pytest launch
+was rejected by VSim's required-launcher guard; the supported
+`scripts/run_vsim_tests.sh` rerun passes. JUnit artifacts, including that initial
+invocation, are retained in the diagnosis directory.
+
+### Acceptance and handoff (2026-10-11)
+
+The measured VSim sparse-reset overhead is **accepted by the maintainer** for
+this CoM migration: +9.11% [+8.33%, +9.47%], about 21 us/call, versus the
+historical fast implementation. VSim stepping remains within the 5% threshold.
+Stop reset optimization here; retain correct CoM positions/velocities, model-axis
+orientations and complete state refreshes. This is an explicit acceptance of a
+measured regression, not a performance pass or proof of full speed recovery.
+Keep the comparator's general 5% threshold and the failed historical reports
+unchanged. Future regressions should be measured against this accepted CoM
+implementation once its source revision is frozen.
+
+MuJoCo task/step performance qualification remains separate follow-up work:
+exact native initial/reset matching for CPU, and same-build repeatability
+controls for Warp. Their rejected timings are still not accepted evidence.
+Humanoid initialization/height settings, affected foot metrics and older policies
+also need deliberate review; this handoff does not retune tasks or claim policy
+equivalence.
+
 ## Main promotion preparation (2026-10-03)
 
 The candidate is QGym's `bigred` branch at `ebcfd8b9`, plus the preparation
