@@ -13,6 +13,10 @@ dependencies = [
     "marimo>=0.23.16",
 ]
 
+[project.scripts]
+# macOS: play.py under mjpython with the uv libpython fix (see RUNNING.md).
+mac_run = "gym.utils.mac_run:main"
+
 [project.optional-dependencies]
 gpu = ["mujoco-warp>=3.6"]
 # Go2 hardware deployment uses Linux timerfd and the official SDK's DDS stack.
