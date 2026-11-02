@@ -441,6 +441,27 @@ wheels = [
 ]
 
 [[package]]
+name = "legged-fld"
+version = "0.1.0"
+source = { editable = "thirdparty/legged-fld" }
+dependencies = [
+    { name = "numpy" },
+    { name = "torch" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "torch" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest" },
+    { name = "ruff", specifier = ">=0.15.9" },
+]
+
+[[package]]
 name = "loro"
 version = "1.13.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1254,6 +1275,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+fld = [
+    { name = "legged-fld" },
+]
 gpu = [
     { name = "mujoco-warp" },
 ]
@@ -1278,6 +1302,7 @@ profiling = [
 
 [package.metadata]
 requires-dist = [
+    { name = "legged-fld", marker = "extra == 'fld'", editable = "thirdparty/legged-fld" },
     { name = "marimo", specifier = ">=0.23.16" },
     { name = "matplotlib" },
     { name = "mujoco", specifier = ">=3.6" },
@@ -1290,7 +1315,7 @@ requires-dist = [
     { name = "vlearn", marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'vsim'", path = "thirdparty/vlearn/vlearn-0.3.15+cu130-cp311-cp311-linux_x86_64.whl" },
     { name = "wandb" },
 ]
-provides-extras = ["gpu", "unitree-sdk", "vsim"]
+provides-extras = ["gpu", "unitree-sdk", "fld", "vsim"]
 
 [package.metadata.requires-dev]
 dev = [

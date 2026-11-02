@@ -95,6 +95,9 @@ thirdparty/vlearn
 # Optional Unitree SDK checkout, including upstream native CRC libraries
 thirdparty/unitree_sdk2_python/
 
+# Optional legged-fld checkout, managed by gitman (gitman.yml)
+thirdparty/legged-fld/
+
 # Local simulator and notebook outputs
 MUJOCO_LOG.TXT
 pendulum_rollout.png

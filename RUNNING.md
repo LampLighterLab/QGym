@@ -16,6 +16,25 @@ uv run --frozen scripts/train.py --task=go2trot --headless
 
 Checkpoints land in `logs/<experiment_name>/<run>/model_<iter>.pt`.
 
+## FLD models (legged-fld)
+
+The VAE/PAE models live in [legged-fld](https://github.com/LampLighterLab/legged-fld),
+pulled in as an optional, editable checkout (pinned in `gitman.yml`):
+
+```sh
+uvx gitman install            # clone legged-fld at the locked SHA into thirdparty/
+uv sync --frozen --extra fld
+uv run --frozen --extra fld python -c "import legged_fld; print(legged_fld.__file__)"
+```
+
+`thirdparty/legged-fld` is a full git checkout and is where legged-fld gets
+developed — edits there are live in this venv. gitman leaves it on a detached
+SHA, so `git switch <branch>` inside it before committing. After pushing
+legged-fld, `uvx gitman update` moves the pin (`sources_locked` in `gitman.yml`).
+
+Without the checkout, plain `uv sync --frozen` still works (CI path); only
+code importing `legged_fld` needs the extra.
+
 ## Play (with the MuJoCo viewer) — macOS
 
 On macOS the MuJoCo passive viewer must run under `mjpython`, not `python`.
@@ -69,3 +88,8 @@ uv run --frozen python -m pytest -q
   on sim warnings, so it can land in `logs/<experiment>/`; it used to be picked
   as the "latest run" (`NotADirectoryError`). Files are now ignored. Pass
   `--load_run <dir>` to choose a specific run.
+- `uv lock` can't run on a machine without the licensed vlearn wheel (and the
+  Unitree checkout). The `fld` extra's lock entries were produced by locking
+  with the `vsim` extra stripped and transplanting the delta. If legged-fld
+  gains a dependency, the lock must be updated the same way —
+  `uv sync --frozen` won't install deps the lock doesn't know about.

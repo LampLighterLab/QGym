@@ -25,6 +25,9 @@ gpu = ["mujoco-warp>=3.6"]
 unitree_sdk = [
     "unitree-sdk2py==1.0.1; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
 ]
+# FLD models (VAE/PAE), developed in LampLighterLab/legged-fld. Fetch the
+# checkout with `uvx gitman install` (gitman.yml), then sync with --extra fld.
+fld = ["legged-fld"]
 # VSim: licensed local engine for Linux x86_64 / Python 3.11.
 # See thirdparty/README.md; install with uv sync --frozen --extra vsim.
 # Requires system libczmq4 and a valid node-locked license.
@@ -47,6 +50,7 @@ dev = [
 # procedure on a new machine).
 vlearn = { path = "thirdparty/vlearn/vlearn-0.3.15+cu130-cp311-cp311-linux_x86_64.whl" }
 unitree-sdk2py = { path = "thirdparty/unitree_sdk2_python", editable = true }
+legged-fld = { path = "thirdparty/legged-fld", editable = true }
 
 [tool.q2.unitree-sdk]
 # Consumed by scripts/fetch_unitree_sdk.py; keep dependency setup in this file.

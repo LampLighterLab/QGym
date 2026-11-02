@@ -1,0 +1,33 @@
+# Source checkouts installed with `uvx gitman install` (into thirdparty/).
+location: thirdparty
+sources:
+  - repo: https://github.com/LampLighterLab/legged-fld.git
+    name: legged-fld
+    rev: vae-start
+    type: git
+    params:
+    sparse_paths:
+      -
+    links:
+      -
+    scripts:
+      -
+    patches:
+      -
+sources_locked:
+  - repo: https://github.com/LampLighterLab/legged-fld.git
+    name: legged-fld
+    rev: 2e59871a0292262a3a4336da4d43d8f47b728934
+    type: git
+    params:
+    sparse_paths:
+      -
+    links:
+      -
+    scripts:
+      -
+    patches:
+      -
+default_group: ''
+groups:
+  -
