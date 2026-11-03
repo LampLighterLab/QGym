@@ -27,10 +27,11 @@ uv sync --frozen --extra fld
 uv run --frozen --extra fld python -c "import legged_fld; print(legged_fld.__file__)"
 ```
 
-`thirdparty/legged-fld` is a full git checkout and is where legged-fld gets
-developed — edits there are live in this venv. gitman leaves it on a detached
-SHA, so `git switch <branch>` inside it before committing. After pushing
-legged-fld, `uvx gitman update` moves the pin (`sources_locked` in `gitman.yml`).
+legged-fld is developed in its own standalone clone; treat
+`thirdparty/legged-fld` as read-only. After pushing legged-fld, pull it in with
+`uvx gitman update` (fetches the latest `rev`, rewrites `sources_locked` in
+`gitman.yml` — commit that). `uvx gitman install` restores the locked SHA.
+Both refuse if the checkout has local edits (`--force` discards them).
 
 Without the checkout, plain `uv sync --frozen` still works (CI path); only
 code importing `legged_fld` needs the extra.
