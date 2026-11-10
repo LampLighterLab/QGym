@@ -36,6 +36,24 @@ Both refuse if the checkout has local edits (`--force` discards them).
 Without the checkout, plain `uv sync --frozen` still works (CI path); only
 code importing `legged_fld` needs the extra.
 
+### Train the conv autoencoder on a retargeted motion
+
+```sh
+uv run --frozen --extra fld scripts/train_autoencoder.py path/to/dog_walk00.npy \
+    [--num_steps 5000] [--latent_channels 4]
+```
+
+Input is a kine2go-pipeline `.npy` ((T, 61) at 60 Hz); the motion files are
+>100 KiB, so they live outside the repo — copy them over separately. Uses CUDA,
+then MPS, then CPU. Writes `logs/autoencoder/conv_autoencoder.{png,pt}`; the
+PNG has the loss curve, window-0 reconstruction, and latent.
+
+W&B works like `scripts/train.py`: copy `user/wandb_config_default.json` to
+`user/wandb_config.json` (gitignored) with your entity/project, or pass
+`--wandb_entity`/`--wandb_project`. With neither (or `--disable_wandb`) the run
+still trains and saves locally. Run `uv run --frozen wandb login` once per
+machine.
+
 ## Play (with the MuJoCo viewer) — macOS
 
 On macOS the MuJoCo passive viewer must run under `mjpython`, not `python`.
