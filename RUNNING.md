@@ -40,19 +40,38 @@ code importing `legged_fld` needs the extra.
 
 ```sh
 uv run --frozen --extra fld scripts/train_autoencoder.py path/to/dog_walk00.npy \
-    [--num_steps 5000] [--latent_channels 4]
+    [--num_steps 5000] [--latent_channels 4] [--train_fraction 0.8]
+```
+
+`--train_fraction 0.8` trains on the first 80% of the clip and reports held-out
+MSE on the rest (normalization uses training frames only). Outputs are named
+`conv_ae_L<L>_train<fraction>.{png,pt}`; the `.pt` includes the loss history.
+
+Evaluate one or more checkpoints (plots go to `logs/autoencoder/plots/`):
+
+```sh
+uv run --frozen --extra fld scripts/evaluate_autoencoder.py path/to/dog_walk00.npy \
+    logs/autoencoder/*.pt
 ```
 
 Input is a kine2go-pipeline `.npy` ((T, 61) at 60 Hz); the motion files are
 >100 KiB, so they live outside the repo — copy them over separately. Uses CUDA,
-then MPS, then CPU. Writes `logs/autoencoder/conv_autoencoder.{png,pt}`; the
-PNG has the loss curve, window-0 reconstruction, and latent.
+then MPS, then CPU. Writes `logs/autoencoder/conv_ae_L<L>_train<fraction>.{png,pt}`;
+the PNG has the loss curve, window-0 reconstruction, and latent.
 
 W&B works like `scripts/train.py`: copy `user/wandb_config_default.json` to
 `user/wandb_config.json` (gitignored) with your entity/project, or pass
 `--wandb_entity`/`--wandb_project`. With neither (or `--disable_wandb`) the run
 still trains and saves locally. Run `uv run --frozen wandb login` once per
-machine.
+machine. Per step it logs `train/mse`, `val/mse` (every 50 steps), and
+`net/grad_norm`/`net/param_norm` (global L2, gradient before the Adam step);
+`wandb.watch` adds weight and gradient histograms 50 times per run. At the end
+it logs eval-mode per-joint RMSE in mrad (`results/joint_rmse` table + bar
+charts, train and held-out), per-latent-channel mean/std
+(`results/latent_stats`, also in the run summary), interactive window-0
+reconstruction and latent line plots, the PNG, and the `.pt` as a `model`
+artifact. `WANDB_MODE=offline` logs to `logs/wandb/` without uploading
+(`wandb sync <run dir>` later).
 
 ## Play (with the MuJoCo viewer) — macOS
 
