@@ -16,6 +16,7 @@ gym/wandb
 *.zip
 *.npz
 user/wandb_config.json
+user/wandb_config_autoencoder.json
 *trajectories/
 
 # Byte-compiled / optimized / DLL files
