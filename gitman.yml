@@ -17,7 +17,7 @@ sources:
 sources_locked:
   - repo: https://github.com/LampLighterLab/legged-fld.git
     name: legged-fld
-    rev: 71636106b73fec32a8ef21b1df9f17752d65bc14
+    rev: d4cb6a667fe403e295085faf9ea1ae988b641bb9
     type: git
     params:
     sparse_paths:

@@ -45,7 +45,7 @@ uv run --frozen --extra fld scripts/train_autoencoder.py path/to/dog_walk00.npy 
 
 `--train_fraction 0.8` trains on the first 80% of the clip and reports held-out
 MSE on the rest (normalization uses training frames only). Outputs are named
-`conv_ae_L<L>_train<fraction>.{png,pt}`; the `.pt` includes the loss history.
+`conv_ae_L<L>_train<fraction>_K<kernel>_s<seed>.{png,pt}`; the `.pt` includes the loss history.
 
 Evaluate one or more checkpoints (plots go to `logs/autoencoder/plots/`):
 
@@ -56,7 +56,7 @@ uv run --frozen --extra fld scripts/evaluate_autoencoder.py path/to/dog_walk00.n
 
 Input is a kine2go-pipeline `.npy` ((T, 61) at 60 Hz); the motion files are
 >100 KiB, so they live outside the repo — copy them over separately. Uses CUDA,
-then MPS, then CPU. Writes `logs/autoencoder/conv_ae_L<L>_train<fraction>.{png,pt}`;
+then MPS, then CPU. Writes `logs/autoencoder/conv_ae_L<L>_train<fraction>_K<kernel>_s<seed>.{png,pt}`;
 the PNG has the loss curve, window-0 reconstruction, and latent.
 
 W&B works like `scripts/train.py`: copy `user/wandb_config_default.json` to

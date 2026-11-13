@@ -65,7 +65,7 @@ def pick_device():
     return "cpu"
 
 
-def init_wandb(args, run_config):
+def init_wandb(args, run_config, run_name):
     wandb_helper = wandb_singleton.WandbSingleton()
     wandb_helper.set_wandb_values(args)
     motion_name = os.path.splitext(os.path.basename(args.motion))[0]
@@ -73,10 +73,7 @@ def init_wandb(args, run_config):
         project=wandb_helper.get_project_name(),
         entity=wandb_helper.get_entity_name(),
         dir=os.path.join(GYM_ROOT_DIR, "logs"),
-        name=(
-            f"conv_ae_L{args.latent_channels}_train{args.train_fraction:g}"
-            f"_{motion_name}"
-        ),
+        name=f"{run_name}_{motion_name}",
         config=run_config,
         mode=None if wandb_helper.is_wandb_enabled() else "disabled",
     )
@@ -275,7 +272,11 @@ def main():
     args = parser.parse_args()
     torch.manual_seed(args.seed)
     device = pick_device()
-    run_name = f"conv_ae_L{args.latent_channels}_train{args.train_fraction:g}_K{args.kernel_size}"
+    # one name for the W&B run, the local .png/.pt and the model artifact
+    run_name = (
+        f"conv_ae_L{args.latent_channels}_train{args.train_fraction:g}"
+        f"_K{args.kernel_size}_s{args.seed}"
+    )
 
     trajectory = load_kine2go_joints(args.motion)
     train_traj, val_traj = split_trajectory(trajectory, args.train_fraction)
@@ -300,12 +301,15 @@ def main():
             "num_windows": x.shape[0],
             "device": device,
         },
+        run_name,
     )
 
     x = x.to(device)
     if x_val is not None:
         x_val = x_val.to(device)
-    ae = ConvAutoencoder(x.shape[1], args.latent_channels, WINDOW_LENGTH, kernel_size = args.kernel_size).to(device)
+    ae = ConvAutoencoder(
+        x.shape[1], args.latent_channels, WINDOW_LENGTH, kernel_size=args.kernel_size
+    ).to(device)
     wandb.watch(ae, log="all", log_freq=max(args.num_steps // NUM_HISTOGRAMS, 1))
     losses, val_history = train(ae, x, args.num_steps, x_val)
     wandb.unwatch(ae)
