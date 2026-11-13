@@ -86,7 +86,8 @@ def load_run(path, trajectory):
     train_traj, val_traj = split_trajectory(trajectory, train_fraction)
 
     num_latent = ckpt["args"]["latent_channels"]
-    ae = ConvAutoencoder(trajectory.shape[1], num_latent, H)
+    kernel_size = ckpt["args"].get("kernel_size", 61)
+    ae = ConvAutoencoder(trajectory.shape[1], num_latent, H, kernel_size=kernel_size)
     ae.load_state_dict(ckpt["model"])
     ae.eval()
 

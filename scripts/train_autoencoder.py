@@ -267,6 +267,7 @@ def main():
         default=1.0,
         help="train on this leading fraction of the clip, hold out the rest",
     )
+    parser.add_argument("--kernel_size", type=int, default=61)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--wandb_project", type=str, default=None)
@@ -274,7 +275,7 @@ def main():
     args = parser.parse_args()
     torch.manual_seed(args.seed)
     device = pick_device()
-    run_name = f"conv_ae_L{args.latent_channels}_train{args.train_fraction:g}"
+    run_name = f"conv_ae_L{args.latent_channels}_train{args.train_fraction:g}_K{args.kernel_size}"
 
     trajectory = load_kine2go_joints(args.motion)
     train_traj, val_traj = split_trajectory(trajectory, args.train_fraction)
@@ -304,7 +305,7 @@ def main():
     x = x.to(device)
     if x_val is not None:
         x_val = x_val.to(device)
-    ae = ConvAutoencoder(x.shape[1], args.latent_channels, WINDOW_LENGTH).to(device)
+    ae = ConvAutoencoder(x.shape[1], args.latent_channels, WINDOW_LENGTH, kernel_size = args.kernel_size).to(device)
     wandb.watch(ae, log="all", log_freq=max(args.num_steps // NUM_HISTOGRAMS, 1))
     losses, val_history = train(ae, x, args.num_steps, x_val)
     wandb.unwatch(ae)
