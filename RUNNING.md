@@ -61,11 +61,20 @@ no window spans two clips. Outputs are
 `<split>` = `val-walk03` or `train0.8`; the `.pt` stores the loss history and
 the clip basenames.
 
-Leave-one-walk-out sweep (6 walks x 3 seeds = 18 runs; `R` as above):
+Leave-one-walk-out sweep: `scripts/sweep_autoencoder.py` runs every held-out
+walk x seed (default walks 00 01 02 03 04 06, seeds 0 1 2, K=13 = 18 runs),
+prints progress with held-out MSE vs the nearest-window and PCA baselines, and
+ends with a per-walk table (also `summary.csv`). Per-run logs go to
+`logs/autoencoder/sweep_<time>/`. It refuses to start if W&B would be disabled
+(pass `--no_wandb` to run without it); try `--dry_run` first to see the commands.
 
 ```sh
-W=(00 01 02 03 04 06); for V in "${W[@]}"; do T=(); for U in "${W[@]}"; do [ "$U" != "$V" ] && T+=($R/dog_walk${U}_joint_pos.npy); done; for S in 0 1 2; do uv run --frozen --extra fld scripts/train_autoencoder.py "${T[@]}" --val_motions $R/dog_walk${V}_joint_pos.npy --kernel_size 13 --seed $S; done; done
+uv run --frozen --extra fld scripts/sweep_autoencoder.py [--data_dir $R] \
+    [--clips 00 01 02 03 04 06] [--seeds 0 1 2] [--kernel_size 13] \
+    [--num_steps 5000] [--dry_run] [--no_wandb] [-- extra train_autoencoder args]
 ```
+
+`--data_dir` defaults to `~/Documents/fourier-stuff/kine2go-pipeline/motion_retargeting/results`.
 
 Evaluate checkpoints (`--data_dir` is where the clips are; plots go to
 `logs/autoencoder/plots/`). It prints held-out MSE next to the nearest-window
