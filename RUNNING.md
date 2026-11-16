@@ -36,41 +36,56 @@ Both refuse if the checkout has local edits (`--force` discards them).
 Without the checkout, plain `uv sync --frozen` still works (CI path); only
 code importing `legged_fld` needs the extra.
 
-### Train the conv autoencoder on a retargeted motion
+### Train the conv autoencoder on retargeted motions
+
+Inputs are kine2go-pipeline `.npy` files ((T, 61) at 60 Hz; only the 12 joint
+angles are used). They are >100 KiB, so they live outside the repo: on the
+Linux box in `kine2go-pipeline/motion_retargeting/results/`, copied by hand
+elsewhere. Training uses CUDA, then MPS, then CPU.
+
+Hold out whole clips (the real generalization test):
 
 ```sh
-uv run --frozen --extra fld scripts/train_autoencoder.py path/to/dog_walk00.npy \
-    [--num_steps 5000] [--latent_channels 4] [--train_fraction 0.8]
+R=~/Documents/fourier-stuff/kine2go-pipeline/motion_retargeting/results
+uv run --frozen --extra fld scripts/train_autoencoder.py \
+    $R/dog_walk0{0,1,2,4,6}_joint_pos.npy \
+    --val_motions $R/dog_walk03_joint_pos.npy --kernel_size 13 [--seed 0]
 ```
 
-`--train_fraction 0.8` trains on the first 80% of the clip and reports held-out
-MSE on the rest (normalization uses training frames only). Outputs are named
-`conv_ae_L<L>_train<fraction>_K<kernel>_s<seed>.{png,pt}`; the `.pt` includes the loss history.
+or the end of every clip (`--train_fraction 0.8` trains on the first 80% of
+each; a tail shorter than one 61-frame window is skipped with a warning). The
+two options are exclusive. Use `--kernel_size 13` (default 61 = the old
+window-wide kernel, which memorizes). Normalization uses training data only and
+no window spans two clips. Outputs are
+`logs/autoencoder/conv_ae_L<L>_<split>_K<kernel>_s<seed>.{png,pt}`, with
+`<split>` = `val-walk03` or `train0.8`; the `.pt` stores the loss history and
+the clip basenames.
 
-Evaluate one or more checkpoints (plots go to `logs/autoencoder/plots/`):
+Leave-one-walk-out sweep (6 walks x 3 seeds = 18 runs; `R` as above):
 
 ```sh
-uv run --frozen --extra fld scripts/evaluate_autoencoder.py path/to/dog_walk00.npy \
-    logs/autoencoder/*.pt
+W=(00 01 02 03 04 06); for V in "${W[@]}"; do T=(); for U in "${W[@]}"; do [ "$U" != "$V" ] && T+=($R/dog_walk${U}_joint_pos.npy); done; for S in 0 1 2; do uv run --frozen --extra fld scripts/train_autoencoder.py "${T[@]}" --val_motions $R/dog_walk${V}_joint_pos.npy --kernel_size 13 --seed $S; done; done
 ```
 
-Input is a kine2go-pipeline `.npy` ((T, 61) at 60 Hz); the motion files are
->100 KiB, so they live outside the repo — copy them over separately. Uses CUDA,
-then MPS, then CPU. Writes `logs/autoencoder/conv_ae_L<L>_train<fraction>_K<kernel>_s<seed>.{png,pt}`;
-the PNG has the loss curve, window-0 reconstruction, and latent.
+Evaluate checkpoints (`--data_dir` is where the clips are; plots go to
+`logs/autoencoder/plots/`). It prints held-out MSE next to the nearest-window
+(memorization) and same-size PCA baselines and the jitter floor, then a table
+averaged over seeds:
+
+```sh
+uv run --frozen --extra fld scripts/evaluate_autoencoder.py \
+    --data_dir $R logs/autoencoder/*val-walk*.pt
+```
 
 W&B works like `scripts/train.py`: copy `user/wandb_config_default.json` to
 `user/wandb_config.json` (gitignored) with your entity/project, or pass
-`--wandb_entity`/`--wandb_project`. With neither (or `--disable_wandb`) the run
-still trains and saves locally. Run `uv run --frozen wandb login` once per
-machine. Per step it logs `train/mse`, `val/mse` (every 50 steps), and
-`net/grad_norm`/`net/param_norm` (global L2, gradient before the Adam step);
-`wandb.watch` adds weight and gradient histograms 50 times per run. At the end
-it logs eval-mode per-joint RMSE in mrad (`results/joint_rmse` table + bar
-charts, train and held-out), per-latent-channel mean/std
-(`results/latent_stats`, also in the run summary), interactive window-0
-reconstruction and latent line plots, the PNG, and the `.pt` as a `model`
-artifact. `WANDB_MODE=offline` logs to `logs/wandb/` without uploading
+`--wandb_entity`/`--wandb_project`. Without either (or with `--disable_wandb`)
+the script prints `WARNING: W&B disabled (...)` and only saves locally — check
+for that line before a long sweep. Run `uv run --frozen wandb login` once per
+machine. Logged keys are listed in the `train_autoencoder.py` docstring
+(per-clip `val/<clip>` plus pooled `val/mse`, gradient/weight stats, per-joint
+RMSE, latent stats, window-0 plots, the `.pt` as a `model` artifact).
+`WANDB_MODE=offline` logs to `logs/wandb/` without uploading
 (`wandb sync <run dir>` later).
 
 ## Play (with the MuJoCo viewer) — macOS
@@ -117,6 +132,14 @@ uv run --frozen python -m pytest -q
 ```
 
 ## Gotchas
+
+- A stale `WANDB_API_KEY` in your shell profile overrides a valid `~/.netrc`
+  login (W&B then fails with 401). Remove the export, or run with
+  `env -u WANDB_API_KEY`.
+- legged-fld history rewritten (amend + force-push): `uvx gitman update` keeps
+  the old SHA because the checkout has diverged. Run
+  `git -C thirdparty/legged-fld reset --hard origin/<rev>` (it is a managed,
+  read-only checkout), then `uvx gitman update` and commit `gitman.yml`.
 
 - `mjpython` + uv Python → set `DYLD_LIBRARY_PATH` as above (macOS only).
 - `uv run scripts/play.py` without `--headless` on macOS raises
