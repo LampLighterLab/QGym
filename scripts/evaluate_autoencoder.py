@@ -23,12 +23,16 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from legged_fld.autoencoder import ConvAutoencoder
 
 from gym import GYM_ROOT_DIR
 
-# reuse the loader and split the models were trained with
-from train_autoencoder import build_model, forward_with_latent, load_split, windows_from_clips
+# reuse the model builder, loader and split the models were trained with
+from train_autoencoder import (
+    build_model,
+    forward_with_latent,
+    load_split,
+    windows_from_clips,
+)
 
 PLOTS_DIR = os.path.join(GYM_ROOT_DIR, "logs", "autoencoder", "plots")
 JITTER_CUTOFF_HZ = 10.0
@@ -100,7 +104,9 @@ def load_run(path, data_dir):
         H,
     )
     model = a.get("model", "ae")
-    ae = build_model(model, len(ckpt["joint_names"]), a["latent_channels"], a.get("kernel_size", H))
+    # checkpoints without kernel_size predate the flag: all trained with K = H
+    kernel_size = a.get("kernel_size", H)
+    ae = build_model(model, len(ckpt["joint_names"]), a["latent_channels"], kernel_size)
     ae.load_state_dict(ckpt["model"])
     ae.eval()
 

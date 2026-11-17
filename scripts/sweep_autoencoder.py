@@ -26,14 +26,20 @@ import os
 import subprocess
 import sys
 import time
+from collections import namedtuple
 from types import SimpleNamespace
 
 import numpy as np
 
 from gym import GYM_ROOT_DIR
 
-from collections import namedtuple
-from evaluate_autoencoder import bottleneck_size, load_run, mse, nearest_window_mse, pca_mse
+from evaluate_autoencoder import (
+    bottleneck_size,
+    load_run,
+    mse,
+    nearest_window_mse,
+    pca_mse,
+)
 from sweep_progress import RULE, SweepProgress
 from train_autoencoder import OUT_DIR, WANDB_CONFIG, load_kine2go_joints, make_run_name
 
@@ -49,7 +55,7 @@ def main():
     args = parse_args()
     jobs = [
         Job(model, L, clip, seed)
-        for seed in args.seed
+        for seed in args.seeds
         for model in args.models
         for L in args.latent_channels
         for clip in args.clips
@@ -57,9 +63,11 @@ def main():
 
     print(RULE)
     print(
-        f"leave-one-clip-out sweep: {len(args.clips)} clips x {len(args.seeds)} "
-        f"seeds = {len(jobs)} runs  (K={args.kernel_size}, L={args.latent_channels},"
-        f" {args.num_steps} steps)"
+        f"leave-one-clip-out sweep: {len(args.models)} models x "
+        f"{len(args.latent_channels)} L x {len(args.clips)} clips x "
+        f"{len(args.seeds)} seeds = {len(jobs)} runs\n"
+        f"  models {args.models}, L {args.latent_channels}, K={args.kernel_size}, "
+        f"{args.num_steps} steps"
     )
     print(RULE)
     check_inputs(args)
@@ -69,7 +77,10 @@ def main():
     if args.dry_run:
         for i, job in enumerate(jobs, 1):
             name, command = train_command(args, job)
-            print(f"[{i:2d}/{len(jobs)}] hold out walk{clip}, seed {seed}")
+            print(
+                f"[{i:3d}/{len(jobs)}] {job.model} L{job.latent_channels}, "
+                f"hold out walk{job.clip}, seed {job.seed}"
+            )
             print("    " + " ".join(command))
         return
 
@@ -167,7 +178,7 @@ def summarize(results, args, log_dir):
           + f"{'mean':>9s}")
     rows = []
     for model, L in configs:
-        line, means = f"{model} L{L:<5d}", []
+        line, means = f"{f'{model} L{L}':9s}", []
         for clip in args.clips:
             scores = [s for j, s in results
                       if (j.model, j.latent_channels, j.clip) == (model, L, clip) and s]
@@ -187,7 +198,7 @@ def summarize(results, args, log_dir):
         r = np.array([row[3:7] for row in rows if row[:2] == (model, L)])
         if len(r):
             mean, _, nearest, pca = r.mean(axis=0)
-            print(f"{model} L{L:<5d}{mean:>9.4f}{pca:>16.4f}{mean / pca:>11.2f}"
+            print(f"{f'{model} L{L}':9s}{mean:>9.4f}{pca:>16.4f}{mean / pca:>11.2f}"
                   f"{nearest:>9.4f}")
 
     summary_path = os.path.join(log_dir, "summary.csv")
@@ -205,13 +216,15 @@ def summarize(results, args, log_dir):
 def parse_args():
     parser = argparse.ArgumentParser(description="Leave-one-clip-out AE sweep")
     parser.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
-    parser.add_argument("--models", nargs="+", choices=["ae", "pae"], defualt=["ae", "pae"])
+    parser.add_argument(
+        "--models", nargs="+", choices=["ae", "pae"], default=["ae", "pae"]
+    )
     parser.add_argument(
         "--clips", nargs="+", default=["00", "01", "02", "03", "04", "06"]
     )
     parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     parser.add_argument("--kernel_size", type=int, default=13)
-    parser.add_argument("--latent_channels", type=int, default=[4,6,8])
+    parser.add_argument("--latent_channels", nargs="+", type=int, default=[4,6,8])
     parser.add_argument("--num_steps", type=int, default=5000)
     parser.add_argument("--dry_run", action="store_true", help="print commands only")
     parser.add_argument("--no_wandb", action="store_true")

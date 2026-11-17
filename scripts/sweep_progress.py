@@ -15,7 +15,7 @@ import sys
 import time
 
 RULE = "-" * 78
-BAR_WIDTH = 20
+BAR_WIDTH = 18  # keeps a row within 78 columns
 # trainer progress block header and its pooled held-out line
 STEP_RE = re.compile(r"Step (\d+)/(\d+)")
 HELD_OUT_RE = re.compile(r"held-out \(pooled\):\s*([0-9.eE+-]+)")
@@ -54,7 +54,8 @@ class SweepProgress:
         if self.mode == "stream":
             row = self.rows[i]
             print(
-                f"[{i + 1:2d}/{len(self.rows)}] hold out walk{row['clip']}, "
+                f"[{i + 1:3d}/{len(self.rows)}] {row['config']}, "
+                f"hold out walk{row['clip']}, "
                 f"seed {row['seed']}\n    log: {log_path}",
                 flush=True,
             )
@@ -119,7 +120,8 @@ class SweepProgress:
                 f"{scores['nearest']:.4f}, PCA {scores['pca']:.4f})"
             )
         print(
-            f"[{i + 1:2d}/{len(self.rows)}] walk{row['clip']} seed {row['seed']}: "
+            f"[{i + 1:3d}/{len(self.rows)}] {row['config']} walk{row['clip']} "
+            f"seed {row['seed']}: "
             f"{result}  {format_duration(row['seconds'])}"
             + (f", ETA {format_duration(eta)}" if eta is not None else ""),
             flush=True,
@@ -169,8 +171,8 @@ class SweepProgress:
             mse = f"{row['mse']:.4f}" + ("*" if status == "running" else " ")
         time_text = format_duration(seconds) if seconds is not None else ""
         return (
-            f" walk{row['clip']:<5s}{row['seed']:>4d}  {status:<8s} {bar:<{BAR_WIDTH}s}"
-            f" {pct:>4s}  {mse:>10s}  {time_text:>6s}"
+            f" {row['config']:<7s} walk{row['clip']:<5s}{row['seed']:>4d}  "
+            f"{status:<8s} {bar:<{BAR_WIDTH}s} {pct:>4s}  {mse:>10s}  {time_text:>6s}"
         )
 
     def lines(self, max_lines):
@@ -193,8 +195,8 @@ class SweepProgress:
             RULE,
             header,
             RULE,
-            f" {'held out':<9s}{'seed':>4s}  {'status':<8s} {'progress':<{BAR_WIDTH}s}"
-            f" {'':>4s}  {'held-out MSE':>10s}  {'time':>6s}",
+            f" {'config':<7s} {'held out':<9s}{'seed':>4s}  {'status':<8s} "
+            f"{'progress':<{BAR_WIDTH}s} {'':>4s}  {'held-out MSE':>10s}  {'time':>6s}",
         ]
         foot = [
             RULE,
