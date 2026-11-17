@@ -28,7 +28,7 @@ from legged_fld.autoencoder import ConvAutoencoder
 from gym import GYM_ROOT_DIR
 
 # reuse the loader and split the models were trained with
-from train_autoencoder import load_split, windows_from_clips
+from train_autoencoder import build_model, forward_with_latent, load_split, windows_from_clips
 
 PLOTS_DIR = os.path.join(GYM_ROOT_DIR, "logs", "autoencoder", "plots")
 JITTER_CUTOFF_HZ = 10.0
@@ -57,6 +57,13 @@ def center_track(windows):
 
 # ------------------------------------------------------------------ baselines
 
+
+def bottleneck_size(run):
+    """
+    Shape of the window to the decoder, either L x H (AE) or (phase, f, A, b) x L (PAE)
+    """
+    L = run["num_latent"]
+    return L * run["H"] if run["model"] == "ae" else 4 * L
 
 def mse(a, b):
     return (a - b).pow(2).mean().item()
@@ -92,13 +99,8 @@ def load_run(path, data_dir):
         a.get("train_fraction", 1.0),
         H,
     )
-    ae = ConvAutoencoder(
-        len(ckpt["joint_names"]),
-        a["latent_channels"],
-        H,
-        # checkpoints without kernel_size predate the flag: all trained with K = H
-        kernel_size=a.get("kernel_size", H),
-    )
+    model = a.get("model", "ae")
+    ae = build_model(model, len(ckpt["joint_names"]), a["latent_channels"], a.get("kernel_size", H))
     ae.load_state_dict(ckpt["model"])
     ae.eval()
 
@@ -116,10 +118,11 @@ def load_run(path, data_dir):
     }
     if val_trajs:
         run["x_val"] = windows_from_clips(list(val_trajs.values()), mean, std, H)
+    run["model"] = model
     with torch.no_grad():
-        run["x_hat"], run["z"] = ae(run["x"])
+        run["x_hat"], run["z"] = forward_with_latent(ae, run["x"])
         if run["x_val"] is not None:
-            run["x_hat_val"], _ = ae(run["x_val"])
+            run["x_hat_val"], _ = forward_with_latent(ae, run["x_val"])
     return run
 
 
@@ -240,7 +243,7 @@ def main():
     rows = []
     for path in args.checkpoints:
         run = load_run(path, args.data_dir)
-        dt_s, latent_size = run["ckpt"]["dt_s"], run["num_latent"] * run["H"]
+        dt_s, latent_size = run["ckpt"]["dt_s"], bottleneck_size(run)
         jitter_z, jitter = jitter_floor_z(run, dt_s)
         row = {"name": run["name"], "train": mse(run["x_hat"], run["x"])}
         row |= {"held-out": None, "nearest": None, "PCA": None}

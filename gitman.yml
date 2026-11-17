@@ -3,7 +3,7 @@ location: thirdparty
 sources:
   - repo: https://github.com/LampLighterLab/legged-fld.git
     name: legged-fld
-    rev: dataset-integration
+    rev: pae-impl
     type: git
     params:
     sparse_paths:
@@ -17,7 +17,7 @@ sources:
 sources_locked:
   - repo: https://github.com/LampLighterLab/legged-fld.git
     name: legged-fld
-    rev: d4cb6a667fe403e295085faf9ea1ae988b641bb9
+    rev: b57aeebb3f28020eaa90d9fd032de53e3948f58d
     type: git
     params:
     sparse_paths:
