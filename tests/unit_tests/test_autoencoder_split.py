@@ -3,9 +3,17 @@ import pytest
 import torch
 
 pytest.importorskip("legged_fld")
-from scripts.train_autoencoder import KINE2GO_JOINT_COLS, load_split, windows_from_clips
+from scripts.train_autoencoder import (
+    KINE2GO_JOINT_COLS,
+    build_model,
+    fld_loss,
+    load_split,
+    sequences_from_clips,
+    windows_from_clips
+)
 
 H = 61
+N = 5
 
 
 def write_clip(tmp_path, name, joints):
@@ -44,3 +52,21 @@ def test_fraction_split_is_per_clip_and_skips_short(tmp_path):
     train_trajs, val_trajs = load_split([long, short], [], 0.8, H)
     assert [len(t) for t in train_trajs] == [320, 160]
     assert list(val_trajs) == ["long"]
+
+def test_no_sequence_mixes_clips():
+    a, b = torch.zeros(100, 12), torch.ones(80, 12)
+    seq = sequences_from_clips([a, b], torch.zeros(12), torch.ones(12), H, N)
+    assert seq.shape == ((100 - H - N + 1) + (80 - H - N + 1), N + 1, 12, H)
+    # each clip is constant, so each sequence is constant over steps and time
+    assert torch.all(seq.flatten(1).std(dim=-1) == 0)
+
+
+def test_chunked_fld_loss_is_exact():
+    torch.manual_seed(0)
+    model = build_model("fld", 12, 3, 1).eval()
+    seq = torch.randn(7, N + 1, 12, H)
+    with torch.no_grad():
+        full = model.loss(seq).item()
+    # 7 = 3 + 3 + 1: unequal chunks, so a plain mean of chunk losses would be wrong
+    assert fld_loss(model, seq, 1.0, chunk=3) == pytest.approx(full, rel=1e-5)
+

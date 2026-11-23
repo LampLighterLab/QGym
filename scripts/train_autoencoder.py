@@ -34,7 +34,14 @@ import numpy as np
 import torch
 import wandb
 from legged_fld.autoencoder import ConvAutoencoder
-from legged_fld.data import denormalize, fit_normalizer, make_windows, normalize
+from legged_fld.data import (
+    denormalize,
+    fit_normalizer,
+    make_window_sequences,
+    make_windows,
+    normalize,
+)
+from legged_fld.fld import FourierLatentDynamics
 from legged_fld.pae import PeriodicAutoencoder
 
 from gym import GYM_ROOT_DIR
@@ -117,6 +124,19 @@ def windows_from_clips(trajectories, mean, std, window_length):
         windows.append(make_windows(normalize(trajectory, mean, std), window_length))
     return torch.cat(windows)
 
+def sequences_from_clips(trajectories, mean, std, window_length, horizon):
+    """
+    Normalize each clip, cut (B, N+1, M, H) window sequences, stack.
+
+    Like windows_from_clips, no sequences crosses clips: sequence b, step i is
+    window b+i of the same clip, so a clip needs H+N frames.
+    """
+    sequences = []
+    for trajectory in trajectories:
+        normed = normalize(trajectory, mean, std)
+        sequences.append(make_window_sequences(normed, window_length, horizon))
+    return torch.cat(sequences)
+
 
 # ------------------------------------------------------------------ model
 
@@ -134,7 +154,8 @@ def build_model(model, num_channels, latent_channels, kernel_size):
         return ConvAutoencoder(
             num_channels, latent_channels, WINDOW_LENGTH, kernel_size=kernel_size
         )
-    return PeriodicAutoencoder(
+    cls = FourierLatentDynamics if model == "fld" else PeriodicAutoencoder
+    return cls(
         num_channels, latent_channels, WINDOW_LENGTH, DT_S, kernel_size=kernel_size
     )
 
@@ -161,6 +182,16 @@ def mse(ae, x):
     x_hat, _ = reconstruct(ae, x)
     return (x_hat - x).pow(2).mean().item()
 
+def fld_loss(model, seq, decay, chunk):
+    """
+    Eval mode L_FLD over all of seq, chunk sequences at a time.
+    """
+    model.eval()
+    with torch.no_grad():
+        total = sum(model.loss(s, decay) * len(s) for s in seq.split(chunk))
+    model.train()
+    return (total / len(seq)).item()
+
 
 def global_norm(tensors):
     """L2 norm of all entries of all tensors, as if concatenated."""
@@ -176,12 +207,19 @@ def joint_rmse_mrad(x, x_hat, std):
     return 1e3 * ((x_hat - x) * std[:, None]).pow(2).mean(dim=(0, 2)).sqrt()
 
 
-def train(ae, x, x_val, num_steps):
-    """Full-batch Adam on x with cosine decay; x_val is {clip: windows}, possibly empty.
+def train(ae, x, x_val, num_steps, train_loss=None, val_fld=None):
+    """Adam on x with cosine decay; x_val is {clip: windows}, possibly empty.
+
+    train_loss: () -> loss tensor; default the full-batch reconstruction loss
+    ae.loss(x), logged as train/mse. FLD passes a minibatch L_FLD sampler,
+    logged as train/fld. val_fld: () -> float, the held-out L_FLD (val/fld).
 
     Returns per-step train losses, (step, pooled held-out MSE), and the last
     step's metrics (held-out values there are the final ones).
     """
+    train_key = "train/mse" if train_loss is None else "train/fld"
+    if train_loss is None:
+        train_loss = lambda: ae.loss(x) # noqa: E731
     x_val_all = torch.cat(list(x_val.values())) if x_val else None
     optimizer = torch.optim.Adam(ae.parameters(), lr=LR)
     # add cosine decay
@@ -192,17 +230,17 @@ def train(ae, x, x_val, num_steps):
     start = time.perf_counter()
     for step in range(num_steps):
         optimizer.zero_grad()
-        loss = ae.loss(x)
+        loss = train_loss()
         loss.backward()
         metrics = {
-            "train/mse": loss.item(),
+            train_key: loss.item(),
             "net/grad_norm": global_norm(p.grad for p in ae.parameters()),
             "net/param_norm": global_norm(p.detach() for p in ae.parameters()),
             "opt/lr": scheduler.get_last_lr()[0]
         }
         optimizer.step()
         scheduler.step()
-        losses.append(metrics["train/mse"])
+        losses.append(metrics[train_key])
         # count completed steps, so prints land on 250, 500, ... like train.py;
         # step 1 is an early sanity check, the last step is always included
         done = step + 1
@@ -210,6 +248,8 @@ def train(ae, x, x_val, num_steps):
         if x_val and (first_or_last or done % VAL_EVERY == 0):
             metrics |= {f"val/{name}": mse(ae, xv) for name, xv in x_val.items()}
             metrics["val/mse"] = mse(ae, x_val_all)
+            if val_fld is not None:
+                metrics["val/fld"] = val_fld()
             val_history.append((step, metrics["val/mse"]))
         # commit now, so wandb.watch's histograms from the next step's
         # forward/backward land on the next step's row
@@ -248,12 +288,18 @@ def print_progress(step, num_steps, metrics, elapsed_s):
     done = step + 1
     s = separator(f"Step {done}/{num_steps}", "#")
     s += separator("Reconstruction (z-scored MSE)")
-    s += entry("train", metrics["train/mse"])
+    if "train/mse" in metrics:
+        s += entry("train", metrics["train/mse"])
     if "val/mse" in metrics:
         s += entry("held-out (pooled)", metrics["val/mse"])
         for key, value in metrics.items():
-            if key.startswith("val/") and key != "val/mse":
+            if key.startswith("val/") and key not in ("val/mse", "val/fld"):
                 s += entry(f"held-out {key.removeprefix('val/')}", value)
+    if "train/fld" in metrics:
+        s += separator("FLD loss (eq. 5: MSE summed over steps)")
+        s += entry("train (minibatch)", metrics["train/fld"])
+        if "val/fld" in metrics:
+            s += entry("held-out (pooled)", metrics["val/fld"])
     s += separator("Network")
     s += entry("grad norm", metrics["net/grad_norm"])
     s += entry("param norm", metrics["net/param_norm"])
@@ -391,7 +437,16 @@ def window0_line_plots(x, x_hat, z, mean, std):
 def parse_args():
     parser = argparse.ArgumentParser(description="Train ConvAutoencoder on kine2go")
     parser.add_argument("motions", nargs="+", help="training .npy clips")
-    parser.add_argument("--model", choices=["ae", "pae"], default="ae")
+    parser.add_argument("--model", choices=["ae", "pae", "fld"], default="ae")
+    parser.add_argument(
+        "--horizon", type=int, default=60, help="fld: N predicted windows (60 = 1 s)"
+    )
+    parser.add_argument(
+        "--decay", type=float, default=1.0, help="fld: alpha decay rate on loss"
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=512, help="fld: sequences per step"
+    )
     parser.add_argument(
         "--val_motions",
         nargs="*",
@@ -432,10 +487,11 @@ def make_run_name(args):
         split = "val-" + "+".join(short)
     else:
         split = f"train{args.train_fraction:g}"
-    return (
+    name = (
         f"conv_{args.model}_L{args.latent_channels}_{split}"
         f"_K{args.kernel_size}_s{args.seed}"
     )
+    return name + (f"_N{args.horizon}" if args.model == "fld" else "")
 
 
 def main():
@@ -458,6 +514,25 @@ def main():
     for name, xv in x_val.items():
         print(f"held out {name}: windows {tuple(xv.shape)}")
 
+    train_loss = val_fld = None
+    if args.model == "fld":
+        seq = sequences_from_clips(
+            train_trajs, mean, std, WINDOW_LENGTH, args.horizon
+        ).to(device)
+
+        # a held-out clip shorter than H+N has no sequences; it still counts in val/mse
+        min_frames = WINDOW_LENGTH + args.horizon
+        long_enough = [t for t in val_trajs.values() if len(t) >= min_frames]
+        seq_val = (
+            sequences_from_clips(
+                long_enough, mean, std, WINDOW_LENGTH, args.horizon
+            ).to(device)
+            if long_enough
+            else None
+        )
+        print(f"fld sequences: train {tuple(seq.shape)}, held out "
+              f"{tuple(seq_val.shape) if seq_val is not None else None}")
+
     run_config = {
         **vars(args),
         "dt_s": DT_S,
@@ -473,7 +548,17 @@ def main():
     wandb.watch(ae, log="all", log_freq=watch_freq)
     if not run.disabled:
         print(f"W&B: watching weights/gradients every {watch_freq} steps")
-    losses, val_history, last = train(ae, x, x_val, args.num_steps)
+
+    if args.model == "fld":
+        def train_loss():
+            idx = torch.randint(len(seq), (args.batch_size,), device=device)
+            return ae.loss(seq[idx], args.decay)
+
+        if seq_val is not None:
+            def val_fld():
+                return fld_loss(ae, seq_val, args.decay, args.batch_size)
+
+    losses, val_history, last = train(ae, x, x_val, args.num_steps, train_loss, val_fld)
     wandb.unwatch(ae)
 
     final_mse = mse(ae, x)

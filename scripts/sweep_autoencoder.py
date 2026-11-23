@@ -223,7 +223,7 @@ def parse_args():
         "--clips", nargs="+", default=["00", "01", "02", "03", "04", "06"]
     )
     parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
-    parser.add_argument("--kernel_size", type=int, default=13)
+    parser.add_argument("--kernel_size", type=int, default=1)
     parser.add_argument("--latent_channels", nargs="+", type=int, default=[4,6,8])
     parser.add_argument("--num_steps", type=int, default=5000)
     parser.add_argument("--dry_run", action="store_true", help="print commands only")

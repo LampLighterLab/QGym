@@ -16,9 +16,9 @@ class WandbSingleton(object):
 
         return self.instance
 
-    def set_wandb_values(self, args, train_cfg=None):
-        # build the path for the wandb_config.json file
-        wandb_config_path = os.path.join(GYM_ROOT_DIR, "user", "wandb_config.json")
+    def set_wandb_values(self, args, train_cfg=None, config_name="wandb_config.json"):
+        # build the path for the user/<config_name> file
+        wandb_config_path = os.path.join(GYM_ROOT_DIR, "user", config_name)
 
         # load entity and project name from JSON if it exists
         if os.path.exists(wandb_config_path):
