@@ -3,6 +3,8 @@
     uv run --frozen --extra fld scripts/train_autoencoder.py CLIP.npy [CLIP.npy ...]
         [--val_motions HELD_OUT.npy ...] [--train_fraction 0.8] [--kernel_size 13]
         [--num_steps 5000] [--latent_channels 4] [--seed 0]
+        [--model ae|pae|fld] [--horizon 60] [--decay 1.0] [--batch_size 512]
+        [--lr 1e-3] [--weight_decay 0] [--lr_schedule cosine|constant]
         [--wandb_entity E] [--wandb_project P] [--disable_wandb]
 
 Input: kine2go-pipeline .npy files, (T, 61) at 60 Hz (Go2Env.dump_state in
@@ -182,13 +184,16 @@ def mse(ae, x):
     x_hat, _ = reconstruct(ae, x)
     return (x_hat - x).pow(2).mean().item()
 
-def fld_loss(model, seq, decay, chunk):
+def fld_loss(model, seq, decay, chunk, std=None):
     """
-    Eval mode L_FLD over all of seq, chunk sequences at a time.
+    Eval mode L_FLD over all of seq, chunk sequences at a time (exact: eq. 5 is
+    linear in the batch mean). With std (M,), in physical units (rad^2).
     """
     model.eval()
     with torch.no_grad():
-        total = sum(model.loss(s, decay) * len(s) for s in seq.split(chunk))
+        total = sum(
+            model.forecast_loss(s, decay, std) * len(s) for s in seq.split(chunk)
+        )
     model.train()
     return (total / len(seq)).item()
 
@@ -207,12 +212,24 @@ def joint_rmse_mrad(x, x_hat, std):
     return 1e3 * ((x_hat - x) * std[:, None]).pow(2).mean(dim=(0, 2)).sqrt()
 
 
-def train(ae, x, x_val, num_steps, train_loss=None, val_fld=None):
-    """Adam on x with cosine decay; x_val is {clip: windows}, possibly empty.
+def train(
+    ae,
+    x,
+    x_val,
+    num_steps,
+    train_loss=None,
+    val_fld=None,
+    lr=LR,
+    weight_decay=0.0,
+    lr_schedule="cosine",
+):
+    """Adam on x; x_val is {clip: windows}, possibly empty.
 
     train_loss: () -> loss tensor; default the full-batch reconstruction loss
     ae.loss(x), logged as train/mse. FLD passes a minibatch L_FLD sampler,
     logged as train/fld. val_fld: () -> float, the held-out L_FLD (val/fld).
+    weight_decay is torch Adam's coupled L2 (as in the FLD reference code);
+    lr_schedule is "cosine" (decay to 0 over num_steps) or "constant".
 
     Returns per-step train losses, (step, pooled held-out MSE), and the last
     step's metrics (held-out values there are the final ones).
@@ -221,10 +238,11 @@ def train(ae, x, x_val, num_steps, train_loss=None, val_fld=None):
     if train_loss is None:
         train_loss = lambda: ae.loss(x) # noqa: E731
     x_val_all = torch.cat(list(x_val.values())) if x_val else None
-    optimizer = torch.optim.Adam(ae.parameters(), lr=LR)
-    # add cosine decay
+    optimizer = torch.optim.Adam(ae.parameters(), lr=lr, weight_decay=weight_decay)
+    cosine = lr_schedule == "cosine"
     scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lambda s: 0.5 * (1 + math.cos(math.pi * s / num_steps))
+        optimizer,
+        lambda s: 0.5 * (1 + math.cos(math.pi * s / num_steps)) if cosine else 1.0,
     )
     losses, val_history = [], []
     start = time.perf_counter()
@@ -296,7 +314,7 @@ def print_progress(step, num_steps, metrics, elapsed_s):
             if key.startswith("val/") and key not in ("val/mse", "val/fld"):
                 s += entry(f"held-out {key.removeprefix('val/')}", value)
     if "train/fld" in metrics:
-        s += separator("FLD loss (eq. 5: MSE summed over steps)")
+        s += separator("FLD loss (eq. 5: joint MSE [rad^2] summed over steps)")
         s += entry("train (minibatch)", metrics["train/fld"])
         if "val/fld" in metrics:
             s += entry("held-out (pooled)", metrics["val/fld"])
@@ -463,6 +481,15 @@ def parse_args():
     parser.add_argument("--num_steps", type=int, default=5000)
     parser.add_argument("--latent_channels", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
+    # optimiser; FLD paper/reference code: --lr 1e-4 --weight_decay 5e-4
+    # --lr_schedule constant
+    parser.add_argument("--lr", type=float, default=LR)
+    parser.add_argument(
+        "--weight_decay", type=float, default=0.0, help="torch Adam's (coupled) L2"
+    )
+    parser.add_argument(
+        "--lr_schedule", choices=["cosine", "constant"], default="cosine"
+    )
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--wandb_project", type=str, default=None)
     parser.add_argument("--disable_wandb", action="store_true", default=False)
@@ -537,7 +564,6 @@ def main():
         **vars(args),
         "dt_s": DT_S,
         "window_length": WINDOW_LENGTH,
-        "lr": LR,
         "num_windows": x.shape[0],
         "device": device,
     }
@@ -550,15 +576,27 @@ def main():
         print(f"W&B: watching weights/gradients every {watch_freq} steps")
 
     if args.model == "fld":
+        std_dev = std.to(device)  # FLD loss in physical units (rad^2), as in the paper
+
         def train_loss():
             idx = torch.randint(len(seq), (args.batch_size,), device=device)
-            return ae.loss(seq[idx], args.decay)
+            return ae.forecast_loss(seq[idx], args.decay, std_dev)
 
         if seq_val is not None:
             def val_fld():
-                return fld_loss(ae, seq_val, args.decay, args.batch_size)
+                return fld_loss(ae, seq_val, args.decay, args.batch_size, std_dev)
 
-    losses, val_history, last = train(ae, x, x_val, args.num_steps, train_loss, val_fld)
+    losses, val_history, last = train(
+        ae,
+        x,
+        x_val,
+        args.num_steps,
+        train_loss,
+        val_fld,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        lr_schedule=args.lr_schedule,
+    )
     wandb.unwatch(ae)
 
     final_mse = mse(ae, x)

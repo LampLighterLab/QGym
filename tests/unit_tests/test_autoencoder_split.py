@@ -65,8 +65,11 @@ def test_chunked_fld_loss_is_exact():
     torch.manual_seed(0)
     model = build_model("fld", 12, 3, 1).eval()
     seq = torch.randn(7, N + 1, 12, H)
+    std = torch.rand(12) + 0.1
     with torch.no_grad():
-        full = model.loss(seq).item()
+        full = model.forecast_loss(seq).item()
+        full_rad = model.forecast_loss(seq, std=std).item()
     # 7 = 3 + 3 + 1: unequal chunks, so a plain mean of chunk losses would be wrong
     assert fld_loss(model, seq, 1.0, chunk=3) == pytest.approx(full, rel=1e-5)
+    assert fld_loss(model, seq, 1.0, 3, std) == pytest.approx(full_rad, rel=1e-5)
 
